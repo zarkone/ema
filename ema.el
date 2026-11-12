@@ -193,6 +193,8 @@ as text: a cell never signals."
     (define-key map (kbd "C-c C-p") #'ema-switch-provider)
     (define-key map (kbd "C-c C-r") #'ema-continue)
     (define-key map (kbd "C-c C-l") #'ema-cells)
+    (define-key map (kbd "M-p") #'ema-history-previous)
+    (define-key map (kbd "M-n") #'ema-history-next)
     map))
 
 (define-derived-mode ema-mode text-mode "ema"
@@ -379,6 +381,40 @@ in place of TEXT (an action shows its name, not its pre-prompt)."
                                            text))))
     (ema--step))))
 
+(defvar ema-input-history nil
+  "Inputs sent in the chat, newest first; kept across `ema-new'.")
+(defvar-local ema--history-index -1
+  "Position in `ema-input-history' shown in the input; -1 is the draft.")
+(defvar-local ema--history-draft nil
+  "The unsent input saved when history browsing started.")
+
+(defun ema--history-show (index)
+  "Replace the input with history entry INDEX; -1 restores the draft."
+  (when (= ema--history-index -1)
+    (setq ema--history-draft
+          (buffer-substring-no-properties ema--input (point-max))))
+  (setq ema--history-index index)
+  (delete-region ema--input (point-max))
+  (goto-char (point-max))
+  (insert (if (= index -1)
+              (or ema--history-draft "")
+            (nth index ema-input-history))))
+
+(defun ema-history-previous ()
+  "Replace the input with the previous sent input."
+  (interactive)
+  (let ((i (1+ ema--history-index)))
+    (if (>= i (length ema-input-history))
+        (user-error "No earlier input")
+      (ema--history-show i))))
+
+(defun ema-history-next ()
+  "Replace the input with the next sent input, or the draft after the newest."
+  (interactive)
+  (if (< ema--history-index 0)
+      (user-error "No later input")
+    (ema--history-show (1- ema--history-index))))
+
 (defun ema-send ()
   "Send the text typed after the prompt, with the references added to it."
   (interactive)
@@ -391,6 +427,10 @@ in place of TEXT (an action shows its name, not its pre-prompt)."
     (when (and (string-empty-p text) (null contexts))
       (user-error "Nothing to send"))
     (when ema--busy (user-error "ema is working; C-c C-k stops it"))
+    (unless (or (string-empty-p text) (equal text (car ema-input-history)))
+      (push text ema-input-history))
+    (setq ema--history-index -1
+          ema--history-draft nil)
     (delete-region ema--input (point-max))
     (setq ema--pending nil)
     (ema-submit (if (string-empty-p text) "Look at this." text) contexts)))
