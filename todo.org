@@ -1,0 +1,41 @@
+#+TITLE: ema todo
+
+* TODO Token usage and price in the status bar
+** Request
+#+begin_quote
+I want to see progress on tokens in/out/cached tokens, price probably?
+per current run and total. status bar probably a good place?
+#+end_quote
+
+** Plan (ema's reply)
+Four small steps, each as its own suggestion:
+
+1. Per-run counter: beside the conversation total =ema--usage=, keep a
+   per-run total that resets at each sent message; =ema--add-usage=
+   (ema.el) adds to both.
+2. Price: a =defcustom ema-prices= (model regexp -> per-million price
+   for input / cached read / cache write / output) and a function that
+   computes $ from the usage.  For Anthropic, split the cache writes
+   out of =:in= in =ema--anthropic-parse= (ema-llm.el), since they cost
+   more.
+3. Status bar: =ema-mode-line= shows only while busy now.  Make it
+   always show e.g. =ema ↑35k ⚡716k ↓11k $4.10 (run $0.31)=, plus the
+   spinner when busy; the chat header shows the same.
+4. Optional fix: the OpenAI parser always reports =:cached 0=; read
+   =usage.prompt_tokens_details.cached_tokens=, and for OpenRouter
+   =usage.cost= (the real price).
+
+Open question: the prices for claude-opus-5-5 (input, cache read,
+cache write, output per Mtok) — the user fills them in; until then
+steps 1 and 3 work on tokens only.
+
+* TODO Layered history support, like in anybao
+Hierarchical history: newest turns at full resolution, older turns
+rolled up into summary chunks by level (L1, L2, …), each expandable by
+its seq ("[earlier context, compressed — expand a chunk by its #seq]").
+
+References in ~/any/anybao:
+- [[file:~/any/anybao/repos/_agent/programs/history@v1/program.py][history@v1]] — boot window: raw tail + chunk lines by level
+- [[file:~/any/anybao/repos/_agent/programs/rollup@v1.py][rollup@v1]] — produces the pyramid of chunks
+- [[file:~/any/anybao/docs/adr/006-data-contracts.md][ADR-006]] §1/§2 — turn payload, token estimate (2.5 chars/token)
+- [[file:~/any/anybao/docs/adr/017-agent-userspace-datasets.md][ADR-017]] — where turns and chunks live
