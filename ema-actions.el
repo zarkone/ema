@@ -1,0 +1,286 @@
+;;; ema-actions.el --- Send the region or the point to ema -*- lexical-binding: t -*-
+
+;;; Commentary:
+
+;; The DWIM entry points.  From any buffer:
+;;
+;;   ema-ask-here   ask about the region, or the line at point
+;;   ema-add-here   put a reference to it into the chat input and go there
+;;   ema-act        pick a named action from a list
+;;   ema-act-NAME   one command per action (explain, review, refactor, …)
+;;
+;; An ACTION is a pre-prompt plus a scope.  It sends the code under the
+;; cursor with its prompt in one key press.  Actions are data, kept in
+;; `ema-actions' and saved in actions.eld, so the agent adds new ones
+;; for the user with `ema-action-save'.
+;;
+;; Bind the prefix map once, for example:
+;;
+;;   (keymap-global-set "C-c e" ema-command-map)
+
+;;; Code:
+
+(require 'ema)
+
+(declare-function flymake-diagnostics "flymake")
+(declare-function flymake-diagnostic-beg "flymake")
+(declare-function flymake-diagnostic-type "flymake")
+(declare-function flymake-diagnostic-text "flymake")
+
+(defcustom ema-context-max-lines 200
+  "A context longer than this is sent as a reference without its text."
+  :type 'integer :group 'ema)
+
+;;;; Context: what the cursor points at
+
+(defun ema--context-bounds (scope)
+  "Return (KIND BEG END) for SCOPE in the current buffer.
+An active region always wins.  SCOPE `defun' takes the definition around
+point, `buffer' the whole buffer, anything else the line at point."
+  (cond
+   ((use-region-p)
+    (list "region" (region-beginning)
+          ;; a region that ends at a line start does not include that line
+          (save-excursion (goto-char (region-end))
+                          (if (and (bolp) (> (point) (region-beginning)))
+                              (1- (point)) (point)))))
+   ((eq scope 'buffer) (list "buffer" (point-min) (point-max)))
+   ((and (eq scope 'defun) (bounds-of-thing-at-point 'defun))
+    (let ((b (bounds-of-thing-at-point 'defun)))
+      (list "definition" (car b)
+            (save-excursion (goto-char (cdr b))
+                            (skip-chars-backward " \t\n") (point)))))
+   (t (list "line" (line-beginning-position) (line-end-position)))))
+
+(defun ema--numbered (beg end)
+  "Return the text of lines BEG..END (positions) with line numbers."
+  (save-excursion
+    (goto-char beg)
+    (let ((n (line-number-at-pos beg)) (last (line-number-at-pos end)) out)
+      (while (<= n last)
+        (push (format "%d\t%s" n (buffer-substring-no-properties
+                                  (line-beginning-position) (line-end-position)))
+              out)
+        (setq n (1+ n))
+        (forward-line 1))
+      (string-join (nreverse out) "\n"))))
+
+(defun ema-context (&optional scope)
+  "Return the context at point as a plist.
+:label is a short reference, :text is the block the model reads.
+See `ema--context-bounds' for SCOPE."
+  (pcase-let* ((`(,kind ,beg ,end) (ema--context-bounds scope))
+               (from (line-number-at-pos beg))
+               (to (line-number-at-pos end))
+               (lines (1+ (- to from)))
+               (fn (ignore-errors (add-log-current-defun)))
+               (diags (and (bound-and-true-p flymake-mode)
+                           (delq nil
+                                 (mapcar
+                                  (lambda (d)
+                                    (let ((l (line-number-at-pos (flymake-diagnostic-beg d))))
+                                      (and (<= from l to)
+                                           (format "%d: %s: %s" l
+                                                   (flymake-diagnostic-type d)
+                                                   (flymake-diagnostic-text d)))))
+                                  (flymake-diagnostics))))))
+    (list
+     :label (format "%s:%s" (buffer-name)
+                    (if (= from to) from (format "%d-%d" from to)))
+     :text
+     (concat
+      (format "[context: %s | buffer %s%s | %s%s%s]\n"
+              kind (buffer-name)
+              (if buffer-file-name
+                  (concat " | file " (abbreviate-file-name buffer-file-name)) "")
+              (if (= from to) (format "line %d, column %d" from (current-column))
+                (format "lines %d-%d" from to))
+              (if (and fn (not (equal kind "buffer"))) (format " | in %s" fn) "")
+              (format " | %s" major-mode))
+      (if (> lines ema-context-max-lines)
+          (format "(%d lines, not included: read them with ema-buffer-text)" lines)
+        (ema--numbered beg end))
+      (if diags (concat "\n[diagnostics here]\n" (string-join diags "\n")) "")))))
+
+;;;; Entry points
+
+;;;###autoload
+(defun ema-ask-here (question)
+  "Ask ema QUESTION about the region, or about the line at point."
+  (interactive
+   (list (read-string (if (use-region-p) "ema, about the region: "
+                        "ema, about this line: "))))
+  (let ((ctx (ema-context)))
+    (deactivate-mark)
+    (ema--show-chat)
+    (ema-submit question (list ctx))))
+
+;;;###autoload
+(defun ema-add-here ()
+  "Add a reference to the region or the line at point to the chat input.
+Point moves to the chat; type the question there and send it.  Repeat
+the command in other places to send several references in one message."
+  (interactive)
+  (let ((ctx (ema-context)))
+    (deactivate-mark)
+    (ema)
+    (with-current-buffer (ema--chat-buffer)
+      (push ctx ema--pending)
+      (goto-char (point-max))
+      (insert (propertize (format "⟨%s⟩" (plist-get ctx :label))
+                          'face 'ema-result 'ema-ref (plist-get ctx :label))
+              " "))))
+
+(defun ema--show-chat ()
+  "Display the chat without leaving the current window."
+  (let ((win (selected-window)))
+    (display-buffer (ema--chat-buffer) ema-display-action)
+    (when (window-live-p win) (select-window win))))
+
+;;;; Actions: a pre-prompt and a scope under one name
+
+(defvar ema-actions
+  '((explain  :key "e" :scope defun
+              :prompt "Explain what this code does and why it is written this way. Be brief. Point at the important places with ema-show.")
+    (review   :key "r" :scope defun
+              :prompt "Review this code. Put one ema-note on each finding at its line, bugs and risks first, then give a short summary.")
+    (refactor :key "f" :scope defun
+              :prompt "Propose a refactoring that makes this code simpler to read, with the same behaviour. Check the usages first. Offer it with ema-suggest, one focused change at a time.")
+    (fix      :key "x" :scope line
+              :prompt "Something is wrong here. Find the cause, using the diagnostics and the language server, explain it in one or two sentences and offer the fix with ema-suggest.")
+    (doc      :key "d" :scope defun
+              :prompt "Write the missing documentation for this code in the style this file already uses. Offer it with ema-suggest.")
+    (usages   :key "u" :scope line
+              :prompt "Find where the symbol at this position is used across the project and summarise how. Show the list with ema-present."))
+  "Alist of (NAME . PLIST): :prompt (the pre-prompt), :scope (`defun',
+`line' or `buffer'; an active region always wins), :key (a key in
+`ema-command-map', or nil).")
+
+(defvar ema-command-map
+  (let ((map (make-sparse-keymap)))
+    (define-key map "a" #'ema-ask-here)
+    (define-key map "c" #'ema-add-here)
+    (define-key map "." #'ema-act)
+    (define-key map "o" #'ema)
+    (define-key map "n" #'ema-new)
+    (define-key map "k" #'ema-abort)
+    (define-key map "p" #'ema-switch-provider)
+    (define-key map "q" #'ema-clear-notes)
+    map)
+  "Prefix keymap of ema; bind it to a key, such as C-c e.")
+(fset 'ema-command-map ema-command-map)
+
+(defun ema-run-action (name)
+  "Send the context at point to ema with the pre-prompt of action NAME."
+  (let* ((action (or (alist-get name ema-actions)
+                     (user-error "No ema action %s" name)))
+         (ctx (ema-context (plist-get action :scope))))
+    (deactivate-mark)
+    (ema--show-chat)
+    (ema-submit (plist-get action :prompt) (list ctx) (symbol-name name))))
+
+(defun ema--install-action (name)
+  "Define command ema-act-NAME and bind the key of action NAME."
+  (let ((cmd (intern (format "ema-act-%s" name)))
+        (action (alist-get name ema-actions)))
+    (defalias cmd
+      (lambda () (interactive) (ema-run-action name))
+      (format "Run the ema action `%s' on the region or at point.\n\nPre-prompt: %s"
+              name (plist-get action :prompt)))
+    (when (plist-get action :key)
+      (define-key ema-command-map (plist-get action :key) cmd))
+    cmd))
+
+;;;###autoload
+(defun ema-act ()
+  "Pick an ema action from the list and run it here."
+  (interactive)
+  (let* ((rows (mapcar (lambda (cell)
+                         (cons (symbol-name (car cell))
+                               (truncate-string-to-width
+                                (plist-get (cdr cell) :prompt) 70 nil nil t)))
+                       ema-actions))
+         (pick (ema--annotated-read "ema action: " rows)))
+    (ema-run-action (intern pick))))
+
+;;;; Saved actions; tools for the agent
+
+(defun ema--actions-file ()
+  (expand-file-name "actions.eld" ema-directory))
+
+(defvar ema--stored-actions nil
+  "The actions the user or the agent added; saved in actions.eld.")
+
+(defun ema-load-actions ()
+  "Load the saved actions and define a command for every action."
+  (let ((file (ema--actions-file)))
+    (when (file-readable-p file)
+      (condition-case err
+          (setq ema--stored-actions
+                (with-temp-buffer (insert-file-contents file)
+                                  (read (current-buffer))))
+        (error (message "ema: actions not loaded: %s" (error-message-string err))))))
+  (dolist (cell ema--stored-actions)
+    (setf (alist-get (car cell) ema-actions) (cdr cell)))
+  (dolist (cell ema-actions)
+    (ema--install-action (car cell))))
+
+(ema-deftool ema-actions-list ()
+  "Return the user's ema shortcuts: name, key, scope and pre-prompt per line.
+An action is a command `ema-act-NAME' that sends the code at the cursor
+with a fixed pre-prompt.  Keys are in the prefix map `ema-command-map'."
+  (mapconcat (lambda (cell)
+               (format "%s  key %s  scope %s  — %s" (car cell)
+                       (or (plist-get (cdr cell) :key) "none")
+                       (plist-get (cdr cell) :scope)
+                       (plist-get (cdr cell) :prompt)))
+             ema-actions "\n"))
+
+(ema-deftool ema-action-save (name prompt &optional key scope)
+  "Create or replace the shortcut NAME (a symbol): a command with a pre-prompt.
+The command `ema-act-NAME' sends the code at the user's cursor to you
+with PROMPT as the message.  SCOPE says what is sent when no region is
+active: `defun' (the definition around point, the default), `line' or
+`buffer'.  KEY is a one-key string in the ema prefix map; check
+`(ema-actions-list)` for a free one, or pass nil.  Write PROMPT as an
+instruction to yourself: say what to do and with which tool to deliver
+it (ema-note, ema-suggest, ema-present).  The action is saved for later
+sessions."
+  (unless (and (symbolp name) (stringp prompt) (not (string-empty-p prompt)))
+    (error "NAME must be a symbol and PROMPT a non-empty string"))
+  (when (and key (let ((bound (lookup-key ema-command-map key)))
+                   (and bound (not (eq bound (intern (format "ema-act-%s" name)))))))
+    (error "Key %s is taken by %s in the ema prefix map"
+           key (lookup-key ema-command-map key)))
+  (let ((plist (list :key key :scope (or scope 'defun) :prompt prompt)))
+    (setf (alist-get name ema-actions) plist)
+    (setf (alist-get name ema--stored-actions) plist)
+    (make-directory ema-directory t)
+    (with-temp-file (ema--actions-file)
+      (let ((print-length nil) (print-level nil))
+        (pp ema--stored-actions (current-buffer))))
+    (ema--install-action name)
+    (format "saved: M-x ema-act-%s%s" name
+            (let ((prefix (where-is-internal ema-command-map nil t)))
+              (cond ((and key prefix)
+                     (format ", key %s %s" (key-description prefix) key))
+                    (key (format ", key %s in ema-command-map (the prefix map is not bound to a key yet)" key))
+                    (t ""))))))
+
+(ema-deftool ema-action-delete (name)
+  "Remove the shortcut NAME (a symbol), its command and its key."
+  (let ((action (alist-get name ema-actions)))
+    (unless action (error "No action %s" name))
+    (when (plist-get action :key)
+      (define-key ema-command-map (plist-get action :key) nil))
+    (setq ema-actions (assq-delete-all name ema-actions)
+          ema--stored-actions (assq-delete-all name ema--stored-actions))
+    (fmakunbound (intern (format "ema-act-%s" name)))
+    (with-temp-file (ema--actions-file)
+      (pp ema--stored-actions (current-buffer)))
+    (format "deleted %s" name)))
+
+(ema-load-actions)
+
+(provide 'ema-actions)
+;;; ema-actions.el ends here
