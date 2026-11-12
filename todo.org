@@ -25,11 +25,18 @@ Four small steps, each as its own suggestion:
    =usage.prompt_tokens_details.cached_tokens=, and for OpenRouter
    =usage.cost= (the real price).
 
+Also wanted: token speed — tokens/sec, e.g. out tokens
+over the seconds of each model call, shown in the status bar or the
+header while streaming/completing.
+
 Open question: the prices for claude-opus-5-5 (input, cache read,
 cache write, output per Mtok) — the user fills them in; until then
 steps 1 and 3 work on tokens only.
 
-* TODO Layered history support, like in anybao
+* TODO save a running window of previous cells :claude:
+archive previous to tar.gz. default 1000 probably?
+
+* TODO Layered history support, like in anybao :claude:
 Hierarchical history: newest turns at full resolution, older turns
 rolled up into summary chunks by level (L1, L2, …), each expandable by
 its seq ("[earlier context, compressed — expand a chunk by its #seq]").
@@ -39,3 +46,22 @@ References in ~/any/anybao:
 - [[file:~/any/anybao/repos/_agent/programs/rollup@v1.py][rollup@v1]] — produces the pyramid of chunks
 - [[file:~/any/anybao/docs/adr/006-data-contracts.md][ADR-006]] §1/§2 — turn payload, token estimate (2.5 chars/token)
 - [[file:~/any/anybao/docs/adr/017-agent-userspace-datasets.md][ADR-017]] — where turns and chunks live
+
+* TODO Read secrets from auth-source (Emacs secrets)
+Switch =ema-secret-function= from =ema-secret-from-file= (secrets.env)
+to auth-source, so keys live in the user's =auth-sources=
+(=~/.emacs.d/secrets/.authinfo.gpg=, GPG-encrypted).
+
+- Mapping: a secret name is the host, e.g.
+  =machine llm.key.openrouter login ema password sk-or-...=
+- Lookup: =(auth-source-pick-first-password :host NAME)=; keep the
+  env-var fallback (=LLM_KEY_OPENROUTER=).
+- Keep secrets.env as a fallback or drop it? Decide.
+- Update the self-description (ema-self.el) and core.md: "a missing
+  key is the user's to add" should name the authinfo file.
+- Never read or print a value; tools report only present/missing.
+
+* TODO Mirror the chat layout: put the ema window on the left
+Now the chat opens on the side where =ema-display-action= puts it
+(right by default); the user reads the code on the right and the chat
+on the left is more comfortable.

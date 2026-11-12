@@ -46,7 +46,7 @@
   :type 'integer)
 
 (defcustom ema-display-action
-  '((display-buffer-in-side-window) (side . right) (window-width . 0.4))
+  '((display-buffer-in-side-window) (side . left) (window-width . 0.4))
   "How `ema' displays the chat buffer (a `display-buffer' action)."
   :type 'sexp)
 
