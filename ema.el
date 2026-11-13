@@ -251,13 +251,23 @@ as text: a cell never signals."
   (setq global-mode-string
         (append (or global-mode-string '("")) '((:eval (ema-mode-line))))))
 
+(defun ema--human-number (n)
+  "Format token count N rounded: 950, 1.2K, 35K, 1.2M, 35M."
+  (cl-flet ((scaled (x suffix)
+              (if (< x 10)
+                  (format "%.1f%s" x suffix)
+                (format "%d%s" (round x) suffix))))
+    (cond ((< n 1000) (number-to-string n))
+          ((< n 999500) (scaled (/ n 1000.0) "K"))
+          (t (scaled (/ n 1000000.0) "M")))))
+
 (defun ema--header ()
   (let ((p (ema-provider-plist)))
     (format " %s/%s  ·  in %s (cached %s)  out %s%s"
             ema-provider (plist-get p :model)
-            (or (plist-get ema--usage :in) 0)
-            (or (plist-get ema--usage :cached) 0)
-            (or (plist-get ema--usage :out) 0)
+            (ema--human-number (or (plist-get ema--usage :in) 0))
+            (ema--human-number (or (plist-get ema--usage :cached) 0))
+            (ema--human-number (or (plist-get ema--usage :out) 0))
             (if ema--busy
                 (format "  ·  %s %s  (C-c C-k stops)" (ema--spinner) (ema--activity))
               ""))))
