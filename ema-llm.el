@@ -239,7 +239,11 @@ a keyless local server), :effort (Anthropic only), :max-tokens.")
           :stop (if (and (vectorp calls) (> (length calls) 0)) "tool_use"
                   (pcase (plist-get choice :finish_reason)
                     ("length" "max_tokens") (_ "end_turn")))
-          :usage (list :in (or (plist-get u :prompt_tokens) 0) :cached 0
+          :usage (list :in (or (plist-get u :prompt_tokens) 0)
+                       :cached (or (plist-get
+                                    (plist-get u :prompt_tokens_details)
+                                    :cached_tokens)
+                                   0)
                        :out (or (plist-get u :completion_tokens) 0)))))
 
 ;;;; Transport
