@@ -306,6 +306,42 @@ as text: a cell never signals."
       (when (>= (window-point w) ema--input)
         (with-selected-window w (recenter -1))))))
 
+(defconst ema--path-regexp
+  "\\(?:~\\|\\.\\.?\\)?/?[[:alnum:]_.+@-]+\\(?:/[[:alnum:]_.+@-]+\\)*"
+  "Matches a candidate file path in a reply.")
+
+(defun ema--open-link (button)
+  "Show the file of BUTTON, at its line, beside the chat."
+  (ema-show (button-get button 'ema-file) (button-get button 'ema-line)))
+
+(defun ema--linkify (beg end)
+  "Make each existing file path between BEG and END a link.
+A path is relative to `default-directory', the project of the buffer the
+user works in.  A \":LINE\" after the path is where the link goes."
+  (unless (file-remote-p default-directory)
+    (save-excursion
+      (goto-char beg)
+      (let ((inhibit-read-only t) (case-fold-search nil))
+        (while (re-search-forward ema--path-regexp end t)
+          (let* ((pbeg (match-beginning 0))
+                 (path (string-trim-right (match-string-no-properties 0) "[.]+"))
+                 (pend (+ pbeg (length path)))
+                 (line (save-excursion
+                         (goto-char pend)
+                         (and (looking-at ":\\([0-9]+\\)")
+                              (prog1 (string-to-number (match-string 1))
+                                (setq pend (match-end 0)))))))
+            (when (and (string-match-p "[/.]" path)
+                       (not (member path '("." ".." "/")))
+                       (file-regular-p (expand-file-name path)))
+              (make-text-button pbeg pend
+                                'action #'ema--open-link
+                                'follow-link t
+                                'help-echo "RET or mouse: show this place"
+                                'ema-file (expand-file-name path)
+                                'ema-line line))
+            (goto-char (max pend (point)))))))))
+
 (defun ema--chat-buffer ()
   (let ((buf (get-buffer-create "*ema*")))
     (with-current-buffer buf
@@ -371,6 +407,12 @@ in place of TEXT (an action shows its name, not its pre-prompt)."
     (setq ema--origin (or caller (ema--origin-buffer))
           ema--turns 0
           ema--busy t)
+    ;; relative paths in the chat (links, ffap, embark) resolve in the project
+    (when (buffer-live-p ema--origin)
+      (setq default-directory
+            (with-current-buffer ema--origin
+              (let ((pr (ignore-errors (project-current nil))))
+                (if pr (expand-file-name (project-root pr)) default-directory)))))
     (ema--insert (concat "\n› " (or title text)
                          (if contexts
                              (concat "  "
@@ -498,6 +540,7 @@ in place of TEXT (an action shows its name, not its pre-prompt)."
         ema--phase nil
         ema-status-text nil)
   (ema--spin-stop)
+  (ema--close-change-groups)
   (ema--settle-queue)
   (when notice (ema--insert notice 'ema-notice))
   (force-mode-line-update))
@@ -636,7 +679,9 @@ in place of TEXT (an action shows its name, not its pre-prompt)."
       (seq-doseq (block content)
         (pcase (plist-get block :type)
           ("text"
-           (ema--insert (concat "\n" (string-trim (plist-get block :text)) "\n")))
+           (let ((from (marker-position ema--out)))
+             (ema--insert (concat "\n" (string-trim (plist-get block :text)) "\n"))
+             (ema--linkify from (marker-position ema--out))))
           ("tool_use"
            (let* ((input (plist-get block :input))
                   (code (plist-get input :code))

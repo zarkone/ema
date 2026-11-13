@@ -21,6 +21,8 @@
 (require 'cl-lib)
 (require 'diff)
 (require 'vc)
+(require 'grep)
+(require 'eieio)
 
 (declare-function eglot-project-nickname "eglot")
 
@@ -228,24 +230,38 @@ With REGEXP, only buffers whose name or file matches.  Internal buffers
                (buffer-list))
    "\n"))
 
-(ema-deftool ema-buffer-text (buffer &optional from-line to-line)
-  "Return the text of BUFFER (a name) with line numbers.
-FROM-LINE and TO-LINE bound the part; the default is the whole buffer.
-To read a file that is not open: (ema-buffer-text (find-file-noselect FILE))."
-  (with-current-buffer buffer
-    (save-excursion
-      (save-restriction
-        (widen)
-        (goto-char (point-min))
-        (forward-line (1- (or from-line 1)))
-        (let ((n (or from-line 1)) lines)
-          (while (and (not (eobp)) (or (null to-line) (<= n to-line)))
-            (push (format "%d\t%s" n (buffer-substring-no-properties
-                                      (line-beginning-position) (line-end-position)))
-                  lines)
-            (setq n (1+ n))
-            (forward-line 1))
-          (string-join (nreverse lines) "\n"))))))
+(defun ema--numbered-lines (from-line to-line)
+  "Return lines FROM-LINE..TO-LINE of the current buffer with line numbers."
+  (save-excursion
+    (save-restriction
+      (widen)
+      (goto-char (point-min))
+      (forward-line (1- (or from-line 1)))
+      (let ((n (or from-line 1)) lines)
+        (while (and (not (eobp)) (or (null to-line) (<= n to-line)))
+          (push (format "%d\t%s" n (buffer-substring-no-properties
+                                    (line-beginning-position) (line-end-position)))
+                lines)
+          (setq n (1+ n))
+          (forward-line 1))
+        (string-join (nreverse lines) "\n")))))
+
+(ema-deftool ema-buffer-text (buffer-or-file &optional from-line to-line)
+  "Return the text of BUFFER-OR-FILE with line numbers.
+BUFFER-OR-FILE is a buffer name or a file path.  A file that is open is
+read from its buffer, with the unsaved changes; a file that is not open
+is read from disk and stays closed.  FROM-LINE and TO-LINE bound the
+part; the default is the whole text.  Use this, not sed or cat."
+  (let ((buf (or (get-buffer buffer-or-file)
+                 (and (stringp buffer-or-file)
+                      (find-buffer-visiting (expand-file-name buffer-or-file))))))
+    (cond
+     (buf (with-current-buffer buf (ema--numbered-lines from-line to-line)))
+     ((and (stringp buffer-or-file) (file-regular-p buffer-or-file))
+      (with-temp-buffer
+        (insert-file-contents buffer-or-file)
+        (ema--numbered-lines from-line to-line)))
+     (t (error "No buffer and no file named %s" buffer-or-file)))))
 
 ;;;; Projects
 
@@ -265,6 +281,60 @@ With REGEXP, only the matching paths."
          (root (project-root pr))
          (files (mapcar (lambda (f) (file-relative-name f root)) (project-files pr))))
     (if regexp (seq-filter (lambda (f) (string-match-p regexp f)) files) files)))
+
+(defcustom ema-search-max-hits 200
+  "`ema-search' returns at most this many hits."
+  :type 'integer :group 'ema)
+
+(ema-deftool ema-search (regexp &optional files dir show)
+  "Search the project for REGEXP; return \"file:line: text\" lines.
+Use this, not grep in a shell.  REGEXP has Emacs syntax: \\\\| is the
+alternation, \\\\( \\\\) group, a bare | or ( is literal.  The search covers
+the project's files and honours its ignore rules; outside a project it
+covers the directory tree.  FILES is a regexp on the relative path
+\(\"\\\\.el\\\\'\" for example).  DIR is where to search (default: the
+current directory); inside a project it limits the search to that
+directory.  With SHOW non-nil the hits also open for the user in a grep
+buffer, where next-error works.  At most `ema-search-max-hits' hits
+come back; the last line says how many are left out."
+  (let* ((default-directory (file-name-as-directory
+                             (expand-file-name (or dir default-directory))))
+         (pr (project-current nil))
+         (root (if pr (expand-file-name (project-root pr)) default-directory))
+         (keep (lambda (f) (or (null files)
+                               (string-match-p files (file-relative-name f root)))))
+         (items (if pr
+                    (let ((paths (seq-filter keep (project-files
+                                                   pr (and dir (list default-directory))))))
+                      (and paths (xref-matches-in-files regexp paths)))
+                  (seq-filter (lambda (x) (funcall keep (xref-location-group
+                                                         (xref-item-location x))))
+                              (xref-matches-in-directory regexp "*" root nil))))
+         (lines (mapcar (lambda (x)
+                          (let ((loc (xref-item-location x)))
+                            (format "%s:%d: %s"
+                                    (file-relative-name (xref-location-group loc) root)
+                                    (xref-location-line loc)
+                                    (string-trim (substring-no-properties (xref-item-summary x))))))
+                        items))
+         (total (length lines))
+         (shown (seq-take lines ema-search-max-hits)))
+    (when (and show lines)
+      (with-current-buffer (get-buffer-create "*ema: search*")
+        (let ((inhibit-read-only t))
+          (erase-buffer)
+          (setq default-directory root)
+          (insert (format "ema search for %s in %s\n\n" regexp (abbreviate-file-name root))
+                  (string-join lines "\n") "\n")
+          (grep-mode)
+          (goto-char (point-min)))
+        (ema--side-window (current-buffer))))
+    (cond ((null lines) (format "no hits in %s" (abbreviate-file-name root)))
+          ((> total (length shown))
+           (concat (string-join shown "\n")
+                   (format "\n… %d more hits: narrow REGEXP or FILES"
+                           (- total (length shown)))))
+          (t (string-join shown "\n")))))
 
 ;;;; Code intelligence (LSP through eglot, xref, flymake, imenu)
 
@@ -375,6 +445,42 @@ With eglot these are the language server's diagnostics.  One
                     (inhibit-same-window . t)
                     (some-window . mru))))
 
+(defvar ema--mark-pushed nil
+  "Non-nil when this turn already saved the user's position for \\[xref-go-back].")
+
+(defun ema--push-mark ()
+  "Save the user's position once a turn, so that \\[xref-go-back] returns there."
+  (unless ema--mark-pushed
+    (let ((win (seq-find (lambda (w) (not (string-prefix-p "*ema" (buffer-name (window-buffer w)))))
+                         (sort (window-list nil 'no-minibuf)
+                               (lambda (a b) (> (window-use-time a) (window-use-time b)))))))
+      (when win
+        (setq ema--mark-pushed t)
+        (ignore-errors
+          (xref-push-marker-stack
+           (with-current-buffer (window-buffer win)
+             (copy-marker (window-point win)))))))))
+
+(defvar ema--change-groups nil
+  "Alist (BUFFER . HANDLE): the buffers that ema edited in this turn.")
+
+(defun ema--open-change-group ()
+  "Start an undo group for this turn in the current buffer, once."
+  (unless (or (assq (current-buffer) ema--change-groups) (eq buffer-undo-list t))
+    (let ((handle (prepare-change-group)))
+      (activate-change-group handle)
+      (push (cons (current-buffer) handle) ema--change-groups))))
+
+(defun ema--close-change-groups ()
+  "Make the edits of this turn one undo step in each buffer; end the turn's marks."
+  (dolist (cell ema--change-groups)
+    (when (buffer-live-p (car cell))
+      (ignore-errors
+        (undo-amalgamate-change-group (cdr cell))
+        (accept-change-group (cdr cell)))))
+  (setq ema--change-groups nil
+        ema--mark-pushed nil))
+
 (defun ema--pulse (beg end)
   (when (fboundp 'pulse-momentary-highlight-region)
     (ignore-errors (pulse-momentary-highlight-region beg end))))
@@ -386,7 +492,7 @@ at the code you talk about.  Returns the buffer name."
   (let* ((buf (if (and (stringp buffer-or-file) (not (get-buffer buffer-or-file)))
                   (find-file-noselect buffer-or-file)
                 (get-buffer buffer-or-file)))
-         (win (ema--side-window buf)))
+         (win (progn (ema--push-mark) (ema--side-window buf))))
     (when line
       (with-selected-window win
         (goto-char (point-min))
@@ -401,12 +507,15 @@ at the code you talk about.  Returns the buffer name."
 (ema-deftool ema-edit (file old new &optional save)
   "In FILE, replace the one occurrence of string OLD with NEW; show the change.
 OLD must occur exactly once: include enough context lines.  The edit is
-made in the file's buffer, shown beside the chat and highlighted; the
-user can undo it.  With SAVE non-nil the buffer is saved, which tools
-that read the disk (compilers, the language server) need.  An empty OLD
+made in the file's buffer, shown beside the chat and highlighted.  All
+edits of one turn in a buffer are one undo step for the user.  With SAVE
+non-nil the buffer is saved, which tools that read the disk (compilers,
+the language server) need.  An empty OLD
 with a new FILE creates the file."
   (let ((buf (find-file-noselect file)))
+    (ema--push-mark)
     (with-current-buffer buf
+      (ema--open-change-group)
       (save-excursion
         (save-restriction
           (widen)
@@ -465,11 +574,40 @@ Use it before an action that is hard to undo."
 
 ;;;; Review: notes on lines, changes the user accepts
 
+(declare-function flymake-make-diagnostic "flymake")
+(declare-function flymake-start "flymake")
+(defvar flymake-diagnostic-functions)
+
+(defun ema--note-overlays ()
+  "Return the note overlays of the current buffer, in buffer order."
+  (save-restriction
+    (widen)
+    (sort (seq-filter (lambda (ov) (overlay-get ov 'ema-note))
+                      (overlays-in (point-min) (point-max)))
+          (lambda (a b) (< (overlay-start a) (overlay-start b))))))
+
+(defun ema-flymake (report-fn &rest _)
+  "A flymake backend: report the ema review notes as diagnostics."
+  (funcall report-fn
+           (mapcar (lambda (ov)
+                     (flymake-make-diagnostic
+                      (current-buffer) (overlay-start ov) (overlay-end ov)
+                      :note (concat "ema: " (overlay-get ov 'ema-note))))
+                   (ema--note-overlays))))
+
+(defun ema--notes-changed ()
+  "Tell flymake, when it is on here, that the notes changed."
+  (when (bound-and-true-p flymake-mode)
+    (add-hook 'flymake-diagnostic-functions #'ema-flymake nil t)
+    (ignore-errors (flymake-start))))
+
 (ema-deftool ema-note (buffer line text)
   "Attach review note TEXT to LINE of BUFFER, shown under that line.
 The note is an overlay: it does not change the file.  Use it to review
 code in place: one short note per finding, then a summary in the chat.
-The user removes notes with \\[ema-clear-notes]."
+Where flymake is on, the note is also a diagnostic, so the user's usual
+keys and lists reach it.  The user moves between notes with
+\\[ema-next-note] and \\[ema-previous-note] and removes them with \\[ema-clear-notes]."
   (with-current-buffer buffer
     (save-excursion
       (save-restriction
@@ -483,6 +621,8 @@ The user removes notes with \\[ema-clear-notes]."
                        (propertize (concat "\n  ▸ " (string-replace "\n" "\n    " text))
                                    'face 'ema-note-text))
           (overlay-put ov 'evaporate t))))
+    (ema--notes-changed)
+    (ema--push-mark)
     (ema--side-window (current-buffer))
     (format "note on %s:%d" (buffer-name) line)))
 
@@ -491,12 +631,10 @@ The user removes notes with \\[ema-clear-notes]."
   (with-current-buffer (or buffer (current-buffer))
     (save-restriction
       (widen)
-      (sort (delq nil (mapcar (lambda (ov)
-                                (when (overlay-get ov 'ema-note)
-                                  (format "%d: %s" (line-number-at-pos (overlay-start ov))
-                                          (overlay-get ov 'ema-note))))
-                              (overlays-in (point-min) (point-max))))
-            #'string-version-lessp))))
+      (mapcar (lambda (ov)
+                (format "%d: %s" (line-number-at-pos (overlay-start ov))
+                        (overlay-get ov 'ema-note)))
+              (ema--note-overlays)))))
 
 (defun ema-clear-notes (&optional buffer)
   "Remove the ema review notes from BUFFER (default: the current buffer)."
@@ -504,7 +642,26 @@ The user removes notes with \\[ema-clear-notes]."
   (with-current-buffer (or buffer (current-buffer))
     (save-restriction
       (widen)
-      (remove-overlays (point-min) (point-max) 'face 'ema-noted-line))))
+      (remove-overlays (point-min) (point-max) 'face 'ema-noted-line))
+    (ema--notes-changed)))
+
+(defun ema-next-note (&optional backward)
+  "Move to the next ema review note; with BACKWARD, to the previous one."
+  (interactive "P")
+  (let* ((starts (mapcar #'overlay-start (ema--note-overlays)))
+         (to (if backward
+                 (car (last (seq-filter (lambda (p) (< p (line-beginning-position))) starts)))
+               (seq-find (lambda (p) (> p (line-end-position))) starts))))
+    (unless starts (user-error "No ema notes in this buffer"))
+    (goto-char (or to (if backward (car (last starts)) (car starts))))
+    (message "%s" (overlay-get (seq-find (lambda (ov) (overlay-get ov 'ema-note))
+                                         (overlays-at (point)))
+                               'ema-note))))
+
+(defun ema-previous-note ()
+  "Move to the previous ema review note."
+  (interactive)
+  (ema-next-note t))
 
 (ema-deftool ema-suggest (file old new &optional why)
   "Propose to replace OLD with NEW in FILE; the user accepts or declines.
@@ -610,13 +767,138 @@ what the user has.  Use it to find a package to suggest."
 
 ;;;; The system around Emacs
 
-(ema-deftool ema-shell (command &optional dir)
-  "Run shell COMMAND in DIR (default: the current directory).
-Returns (:exit CODE :output STRING); stderr is part of the output."
-  (let ((default-directory (or dir default-directory)))
+(defcustom ema-shell-timeout 10
+  "Seconds after which `ema-shell' stops a command.
+Emacs is frozen while `ema-shell' runs; long commands belong in `ema-run'."
+  :type 'number :group 'ema)
+
+(ema-deftool ema-shell (command &optional dir timeout)
+  "Run a quick shell COMMAND in DIR (default: the current directory).
+Returns (:exit CODE :output STRING); stderr is part of the output.
+Emacs is frozen until the command ends, so it is stopped after TIMEOUT
+seconds (default `ema-shell-timeout').  Not for: text search
+\(`ema-search'), reading files (`ema-buffer-text'), git (`ema-git'),
+builds, tests, linters and downloads (`ema-run')."
+  (let* ((default-directory (file-name-as-directory
+                             (expand-file-name (or dir default-directory))))
+         (limit (or timeout ema-shell-timeout))
+         (start (float-time)))
     (with-temp-buffer
-      (let ((code (call-process-shell-command command nil t)))
-        (list :exit code :output (buffer-string))))))
+      (let ((proc (make-process
+                   :name "ema-shell" :buffer (current-buffer)
+                   :command (list shell-file-name shell-command-switch command)
+                   :connection-type 'pipe :noquery t :file-handler t
+                   :sentinel #'ignore)))
+        (unwind-protect
+            (progn
+              (ignore-errors (process-send-eof proc))
+              (while (and (process-live-p proc)
+                          (< (- (float-time) start) limit))
+                (accept-process-output proc 0.1))
+              (when (process-live-p proc)
+                (delete-process proc)
+                (error "The command ran longer than %s s and was stopped. Start it with (ema-run COMMAND) and read (ema-run-result) later"
+                       limit))
+              (accept-process-output proc 0.05)
+              (list :exit (process-exit-status proc) :output (buffer-string)))
+          (when (process-live-p proc) (delete-process proc)))))))
+
+(defvar-local ema--run-status nil
+  "In an ema-run buffer: how the command ended, or nil while it runs.")
+
+(defun ema--run-buffer-name (name)
+  (format "*ema-run: %s*" (or name "check")))
+
+(ema-deftool ema-run (command &optional dir name)
+  "Start COMMAND in DIR in the background, in a compilation buffer.
+For a build, tests, a linter, a download: anything that can take more
+than a moment.  Emacs stays free and the user gets the usual buffer,
+where next-error jumps to each error.  NAME (default \"check\") names
+the buffer; use distinct names to run several commands at once.  This
+returns at once: read the outcome with `(ema-run-result NAME WAIT)`."
+  (require 'compile)
+  (let* ((default-directory (file-name-as-directory
+                             (expand-file-name (or dir default-directory))))
+         (bufname (ema--run-buffer-name name))
+         (old (get-buffer bufname)))
+    (when (and old (get-buffer-process old))
+      (error "%s still runs; read (ema-run-result) or pass another NAME" bufname))
+    (let ((buf (compilation-start command nil (lambda (_mode) bufname))))
+      (with-current-buffer buf
+        (setq ema--run-status nil)
+        (add-hook 'compilation-finish-functions
+                  (lambda (b msg)
+                    (with-current-buffer b (setq ema--run-status (string-trim msg))))
+                  nil t))
+      (format "started in %s" bufname))))
+
+(ema-deftool ema-run-result (&optional name wait)
+  "Return (:status S :output TEXT) of the command started with `ema-run'.
+S is \"running\", \"finished\" or \"exited abnormally with code N\".
+NAME is the name given to `ema-run'.  WAIT is the number of seconds to
+wait for the end (at most 30); the wait stops when the user types.  When
+the command still runs, do other work or end your turn and say so."
+  (let ((buf (or (get-buffer (ema--run-buffer-name name))
+                 (error "No run named %s" (or name "check"))))
+        (start (float-time)))
+    (when wait
+      (while (and (get-buffer-process buf)
+                  (< (- (float-time) start) (min wait 30))
+                  (not (input-pending-p)))
+        (accept-process-output (get-buffer-process buf) 0.2)))
+    (with-current-buffer buf
+      (list :status (or ema--run-status
+                        (if (get-buffer-process buf) "running" "unknown"))
+            :output (buffer-substring-no-properties (point-min) (point-max))))))
+
+;;;; Git: through magit when the user has it
+
+(declare-function magit-call-git "magit-process")
+(declare-function magit-process-buffer "magit-process")
+(declare-function magit-toplevel "magit-git")
+(declare-function magit-refresh "magit-mode")
+(defvar magit-root-section)
+
+(defconst ema--git-read-commands
+  '("status" "log" "diff" "show" "blame" "grep" "ls-files" "ls-tree"
+    "rev-parse" "rev-list" "describe" "shortlog" "cat-file" "merge-base"
+    "name-rev" "for-each-ref" "whatchanged")
+  "Git subcommands that only read; `ema-git' runs them without magit.")
+
+(defun ema--git-plain (args)
+  (with-temp-buffer
+    (let ((code (apply #'process-file "git" nil t nil args)))
+      (list :exit code :output (buffer-string) :via 'git))))
+
+(defun ema--git-magit (args)
+  "Run git ARGS through magit: logged in its process buffer, then a refresh."
+  (let* ((code (apply #'magit-call-git args))
+         (out (ignore-errors
+                (with-current-buffer (magit-process-buffer t)
+                  (with-no-warnings     ; magit's section slots
+                    (let ((section (car (last (eieio-oref magit-root-section 'children)))))
+                      (buffer-substring-no-properties
+                       (eieio-oref section 'content) (eieio-oref section 'end))))))))
+    (ignore-errors (magit-refresh))
+    (list :exit code :output (or out "") :via 'magit)))
+
+(ema-deftool ema-git (&rest args)
+  "Run git with ARGS (strings) in the current directory; use it for all git.
+Returns (:exit CODE :output STRING :via magit-or-git).  A command that
+changes the repository (add, commit, checkout, stash, …) goes through
+magit when the user has it: it appears in the magit process buffer and
+the magit buffers refresh.  A read (status, log, diff, show, …) and a
+session without magit use plain git.  For another repository bind
+`default-directory' around the call.  To show the user the state, use
+the magit commands themselves (`magit-status', `magit-diff-…', `magit-log-…').
+Example: (ema-git \"commit\" \"-m\" \"Fix the parser\" \"parse.el\")"
+  (unless (and args (seq-every-p #'stringp args))
+    (error "ARGS must be strings: (ema-git \"log\" \"--oneline\" \"-5\")"))
+  (if (and (not (member (car args) ema--git-read-commands))
+           (or (featurep 'magit) (require 'magit nil t))
+           (ignore-errors (magit-toplevel)))
+      (ema--git-magit args)
+    (ema--git-plain args)))
 
 (ema-deftool ema-install (package &optional why)
   "Ask the user, then install Emacs PACKAGE (a symbol) from the archives.

@@ -30,6 +30,12 @@ A minimal agent that lives in Emacs.
   (`ema-provider-propose`), tests your pick, then switches.
 - **Review, not authorship.** `ema-note` puts review notes under lines;
   `ema-suggest` shows a diff that you accept or decline.
+- **Emacs first, the shell last.** `ema-search` searches the project
+  through xref, `ema-buffer-text` reads buffers and files, `ema-run`
+  starts builds and checks in a compilation buffer without a freeze, and
+  `ema-git` goes through magit when you have it (plain git otherwise).
+  `ema-shell` remains for quick commands and stops after
+  `ema-shell-timeout` seconds.
 - **Packages.** `ema-packages` and `ema-package-search` discover what
   exists; `ema-install` asks you first.
 
@@ -91,7 +97,26 @@ uses its own scope.
 | `C-c e u` | `ema-act-usages` | The symbol at point |
 | `C-c e .` | `ema-act` | Pick an action from a list |
 | `C-c e q` | `ema-clear-notes` | Removes the review notes |
+| `C-c e ]` / `[` | `ema-next-note`, `ema-previous-note` | Moves between the review notes |
+| `C-c e m` | `ema-menu` | A transient menu of all of the above, with your saved actions |
 | `C-c e o` / `n` / `k` / `p` | | Open chat / new / stop / switch provider |
+
+What "the code at point" is depends on the buffer
+(`ema-context-functions`): lines in a code buffer, the section at point
+in magit, the marked files in dired, the message at point with its
+source in a compilation or grep buffer, the subtree in org.
+
+More ways in and out:
+
+- **Embark:** `embark-act`, then `z` asks ema about the region, symbol,
+  definition or file; `Z` picks an action.
+- **Links:** a file path in a reply (`src/parse.el:120`) is a link to
+  that place. The chat's directory is the project root, so `M-n` in
+  `C-x C-f` and `embark-act` also find the path at point.
+- **Flymake:** where flymake is on, each review note is also a
+  diagnostic.
+- **Undo:** all edits of one turn in a buffer are one undo step.
+  `M-,` returns to where you were before ema showed you a place.
 
 An action is a pre-prompt plus a scope, stored as data. Ask ema for a
 new one ("make me a shortcut that checks error handling"): it calls

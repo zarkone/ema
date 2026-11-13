@@ -33,6 +33,110 @@
 
 ;;;; Context: what the cursor points at
 
+(declare-function magit-current-section "magit-section")
+(declare-function dired-get-marked-files "dired")
+(declare-function org-back-to-heading "org")
+(declare-function org-end-of-subtree "org")
+(declare-function org-get-heading "org")
+(declare-function compile-goto-error "compile")
+
+(defvar ema-context-functions
+  '(ema-context-magit ema-context-dired ema-context-compilation ema-context-org)
+  "Functions that build the context in buffers that are not plain code.
+Each is called with SCOPE in the user's buffer, with no active region,
+and returns nil or a plist (:label SHORT-REFERENCE :text BLOCK).  BLOCK
+starts with a \"[context: …]\" line.  The first non-nil result is the
+context; when all return nil, `ema-context' sends lines of the buffer.
+Add a function here to teach ema what \"this\" means in a new mode.")
+
+(defun ema--context-block (kind details body)
+  "Return a context text: a header of KIND and DETAILS, then BODY, capped."
+  (let* ((lines (split-string body "\n"))
+         (n (length lines)))
+    (concat (format "[context: %s | %s]\n" kind details)
+            (if (> n ema-context-max-lines)
+                (concat (string-join (seq-take lines ema-context-max-lines) "\n")
+                        (format "\n… (%d more lines)" (- n ema-context-max-lines)))
+              body))))
+
+(defun ema-context-magit (_scope)
+  "In a magit buffer: the section at point (a hunk, a file, a commit)."
+  (when (and (derived-mode-p 'magit-mode) (fboundp 'magit-current-section))
+    (let ((section (magit-current-section)))
+      (when section
+        (with-no-warnings               ; magit's section slots
+          (let ((type (eieio-oref section 'type))
+                (value (eieio-oref section 'value)))
+            (list :label (format "magit:%s" type)
+                  :text (ema--context-block
+                         (format "magit %s" type)
+                         (format "repository %s | buffer %s%s"
+                                 (abbreviate-file-name default-directory) (buffer-name)
+                                 (if (stringp value) (concat " | " value) ""))
+                         (string-trim-right
+                          (buffer-substring-no-properties
+                           (eieio-oref section 'start) (eieio-oref section 'end)))))))))))
+
+(defun ema-context-dired (_scope)
+  "In dired: the marked files, or the file at point."
+  (when (derived-mode-p 'dired-mode)
+    (let ((files (ignore-errors (dired-get-marked-files))))
+      (when files
+        (list :label (if (cdr files) (format "%d files" (length files))
+                       (file-name-nondirectory (directory-file-name (car files))))
+              :text (ema--context-block
+                     "files" (format "directory %s (not read: read what you need)"
+                                     (abbreviate-file-name default-directory))
+                     (mapconcat #'abbreviate-file-name files "\n")))))))
+
+(defun ema-context-compilation (_scope)
+  "In a compilation or grep buffer: the message at point and its source."
+  (when (derived-mode-p 'compilation-mode)
+    (let* ((message (buffer-substring-no-properties
+                     (line-beginning-position) (line-end-position)))
+           (place (and (get-text-property (line-beginning-position) 'compilation-message)
+                       (ignore-errors
+                         (save-window-excursion
+                           (save-excursion
+                             (let ((display-buffer-overriding-action
+                                    '(display-buffer-no-window (allow-no-window . t))))
+                               (compile-goto-error))
+                             (list (current-buffer) (line-number-at-pos))))))))
+      (list :label (format "%s:%d" (buffer-name) (line-number-at-pos))
+            :text (ema--context-block
+                   "message" (format "buffer %s%s" (buffer-name)
+                                     (if place (format " | at %s:%d" (buffer-name (car place))
+                                                       (cadr place))
+                                       ""))
+                   (concat message
+                           (when place
+                             (with-current-buffer (car place)
+                               (save-excursion
+                                 (goto-char (point-min))
+                                 (forward-line (1- (cadr place)))
+                                 (concat "\n[source]\n"
+                                         (ema--numbered
+                                          (line-beginning-position -2)
+                                          (line-end-position 4))))))))))))
+
+(defun ema-context-org (scope)
+  "In org, for an action on a definition: the subtree at point."
+  (when (and (derived-mode-p 'org-mode) (eq scope 'defun))
+    (ignore-errors
+      (save-excursion
+        (org-back-to-heading t)
+        (let ((beg (point)) (title (org-get-heading t t t t))
+              (end (save-excursion (org-end-of-subtree t) (point))))
+          (list :label (format "%s:%s" (buffer-name) (substring-no-properties title))
+                :text (ema--context-block
+                       "org subtree"
+                       (format "buffer %s%s | lines %d-%d" (buffer-name)
+                               (if buffer-file-name
+                                   (concat " | file " (abbreviate-file-name buffer-file-name))
+                                 "")
+                               (line-number-at-pos beg) (line-number-at-pos end))
+                       (ema--numbered beg (max beg (1- end))))))))))
+
 (defun ema--context-bounds (scope)
   "Return (KIND BEG END) for SCOPE in the current buffer.
 An active region always wins.  SCOPE `defun' takes the definition around
@@ -68,7 +172,14 @@ point, `buffer' the whole buffer, anything else the line at point."
 (defun ema-context (&optional scope)
   "Return the context at point as a plist.
 :label is a short reference, :text is the block the model reads.
-See `ema--context-bounds' for SCOPE."
+See `ema--context-bounds' for SCOPE.  Without an active region, the
+functions in `ema-context-functions' are asked first."
+  (or (and (not (use-region-p))
+           (run-hook-with-args-until-success 'ema-context-functions scope))
+      (ema--context-lines scope)))
+
+(defun ema--context-lines (scope)
+  "Return the context of SCOPE as numbered lines of the current buffer."
   (pcase-let* ((`(,kind ,beg ,end) (ema--context-bounds scope))
                (from (line-number-at-pos beg))
                (to (line-number-at-pos end))
@@ -168,6 +279,10 @@ the command in other places to send several references in one message."
     (define-key map "q" #'ema-clear-notes)
     map)
   "Prefix keymap of ema; bind it to a key, such as C-c e.")
+;; outside the defvar, so that a reload (`ema-restart') adds them too
+(define-key ema-command-map "]" #'ema-next-note)
+(define-key ema-command-map "[" #'ema-previous-note)
+(define-key ema-command-map "m" #'ema-menu)
 (fset 'ema-command-map ema-command-map)
 
 (defun ema-run-action (name)
@@ -202,6 +317,74 @@ the command in other places to send several references in one message."
                        ema-actions))
          (pick (ema--annotated-read "ema action: " rows)))
     (ema-run-action (intern pick))))
+
+;;;; The menu (transient) and embark
+
+(declare-function transient-setup "transient")
+
+(defun ema--menu-title ()
+  (let ((p (ema-provider-plist)))
+    (format "ema · %s/%s" ema-provider (plist-get p :model))))
+
+;;;###autoload
+(defun ema-menu ()
+  "Show the ema commands and actions in a menu.
+The menu is built from `ema-actions' each time, so it shows the
+shortcuts that you or ema added."
+  (interactive)
+  (unless (require 'transient nil t)
+    (user-error "The transient library is not available"))
+  (let ((actions (delq nil (mapcar
+                            (lambda (cell)
+                              (let ((key (plist-get (cdr cell) :key)))
+                                (and key (list key (symbol-name (car cell))
+                                               (intern (format "ema-act-%s" (car cell)))))))
+                            ema-actions))))
+    (eval
+     `(transient-define-prefix ema--menu ()
+        "The ema menu; see `ema-menu'."
+        [:description ema--menu-title
+         ["Here"
+          ("a" "ask about this" ema-ask-here)
+          ("c" "add to the chat input" ema-add-here)
+          ("." "pick an action" ema-act)]
+         ["Actions" ,@actions]
+         ["Notes"
+          ("]" "next note" ema-next-note :transient t)
+          ("[" "previous note" ema-previous-note :transient t)
+          ("q" "clear notes" ema-clear-notes)]
+         ["Chat"
+          ("o" "open" ema)
+          ("n" "new conversation" ema-new)
+          ("k" "stop" ema-abort)
+          ("p" "provider and model" ema-switch-provider)
+          ("l" "cell log" ema-cells)]])
+     t))
+  (transient-setup 'ema--menu))
+
+(defun ema-ask-file (file question)
+  "Ask ema QUESTION about FILE."
+  (interactive "fFile: \nsema, about this file: ")
+  (ema--show-chat)
+  (ema-submit question
+              (list (list :label (file-name-nondirectory (directory-file-name file))
+                          :text (format "[context: file | %s (not read: read what you need)]"
+                                        (abbreviate-file-name (expand-file-name file)))))))
+
+(defvar embark-target-injection-hooks)
+(with-eval-after-load 'embark
+  ;; z = ema, in `embark-act' on a region, a symbol, a definition or a file
+  (dolist (map '(embark-region-map embark-identifier-map embark-defun-map
+                 embark-expression-map embark-symbol-map))
+    (when (and (boundp map) (keymapp (symbol-value map)))
+      (define-key (symbol-value map) "z" #'ema-ask-here)
+      (define-key (symbol-value map) "Z" #'ema-act)))
+  (when (boundp 'embark-file-map)
+    (define-key (symbol-value 'embark-file-map) "z" #'ema-ask-file))
+  ;; these read a question or an action, not the target: do not insert it
+  (dolist (cmd '(ema-ask-here ema-act))
+    (cl-pushnew 'embark--ignore-target
+                (alist-get cmd embark-target-injection-hooks))))
 
 ;;;; Saved actions; tools for the agent
 

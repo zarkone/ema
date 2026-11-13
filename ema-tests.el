@@ -4,6 +4,8 @@
 
 (require 'ert)
 (require 'ema)
+(require 'dired)
+(require 'org)
 
 (defmacro ema-tests--with-chat (&rest body)
   "Run BODY with a fresh chat buffer and a scratch state directory."
@@ -259,6 +261,136 @@
                (should (equal (ema-secret "llm.key.envonly") "xyz"))
                (should-error (ema-secret "llm.key.missing")))
       (delete-file ema-secrets-file))))
+
+(ert-deftest ema-buffer-text-reads-buffers-and-files ()
+  (let ((file (make-temp-file "ema-text" nil ".txt" "a\nb\nc\n")))
+    (unwind-protect
+        (progn
+          (should (equal (ema-buffer-text file 2 3) "2\tb\n3\tc"))
+          (should-not (find-buffer-visiting file))
+          (with-temp-buffer
+            (insert "x\ny")
+            (should (equal (ema-buffer-text (buffer-name)) "1\tx\n2\ty")))
+          (should-error (ema-buffer-text "/no/such/file")))
+      (delete-file file))))
+
+(ert-deftest ema-search-finds-lines ()
+  (let ((dir (file-name-as-directory (make-temp-file "ema-search" t))))
+    (unwind-protect
+        (progn
+          (with-temp-file (expand-file-name "a.el" dir) (insert ";; one\n(defun needle-a ())\n"))
+          (with-temp-file (expand-file-name "b.txt" dir) (insert "needle-b\nother\n"))
+          (let ((hits (ema-search "needle-[ab]" nil dir)))
+            (should (string-match-p "a\\.el:2: (defun needle-a ())" hits))
+            (should (string-match-p "b\\.txt:1: needle-b" hits)))
+          (should-not (string-match-p "b\\.txt" (ema-search "needle" "\\.el\\'" dir)))
+          (should (string-match-p "\\`no hits" (ema-search "absent-thing" nil dir)))
+          (let ((ema-search-max-hits 1))
+            (should (string-match-p "1 more hits" (ema-search "needle" nil dir)))))
+      (delete-directory dir t))))
+
+(ert-deftest ema-shell-returns-and-stops ()
+  (should (equal (ema-shell "echo hi; exit 3") '(:exit 3 :output "hi\n")))
+  (should-error (ema-shell "sleep 5" nil 0.3)))
+
+(ert-deftest ema-run-is-asynchronous ()
+  (unwind-protect
+      (progn
+        (should (string-match-p "started" (ema-run "sleep 0.3; echo done-marker; exit 2" nil "t")))
+        (should (equal (plist-get (ema-run-result "t") :status) "running"))
+        (should-error (ema-run "true" nil "t"))
+        (let ((r (ema-run-result "t" 10)))
+          (should (string-match-p "code 2" (plist-get r :status)))
+          (should (string-match-p "done-marker" (plist-get r :output)))))
+    (when (get-buffer "*ema-run: t*") (kill-buffer "*ema-run: t*"))))
+
+(ert-deftest ema-git-without-magit ()
+  (let ((default-directory (file-name-as-directory (make-temp-file "ema-git" t))))
+    (unwind-protect
+        (progn
+          (should (= 0 (plist-get (ema-git "init" "-q") :exit)))
+          (with-temp-file "f" (insert "x\n"))
+          (ema-git "add" "f")
+          (let ((r (ema-git "status" "--short")))
+            (should (equal (plist-get r :output) "A  f\n"))
+            (should (eq (plist-get r :via) 'git)))
+          (should-error (ema-git 'status)))
+      (delete-directory default-directory t))))
+
+(ert-deftest ema-reply-paths-become-links ()
+  (let ((dir (file-name-as-directory (make-temp-file "ema-link" t))))
+    (unwind-protect
+        (with-temp-buffer
+          (setq default-directory dir)
+          (make-directory (expand-file-name "src" dir))
+          (with-temp-file (expand-file-name "src/a.el" dir) (insert "x\n"))
+          (insert "See src/a.el:12 and src/none.el, also e.g. this.")
+          (ema--linkify (point-min) (point-max))
+          (let ((b (button-at 6)))
+            (should b)
+            (should (equal (button-get b 'ema-file) (expand-file-name "src/a.el" dir)))
+            (should (= (button-get b 'ema-line) 12))
+            (should (= (button-end b) 16)))
+          (should-not (button-at 24))
+          (should-not (button-at 40)))
+      (delete-directory dir t))))
+
+(ert-deftest ema-context-by-mode ()
+  (let ((dir (file-name-as-directory (make-temp-file "ema-ctx" t))))
+    (unwind-protect
+        (progn
+          (with-temp-file (expand-file-name "f.txt" dir) (insert "x\n"))
+          (with-current-buffer (dired-noselect dir)
+            (goto-char (point-min))
+            (search-forward "f.txt")
+            (let ((ctx (ema-context)))
+              (should (equal (plist-get ctx :label) "f.txt"))
+              (should (string-match-p "\\`\\[context: files" (plist-get ctx :text))))
+            (kill-buffer))
+          (with-temp-buffer
+            (insert "* One\nbody\n** Two\ndeep\n* Three\n")
+            (org-mode)
+            (goto-char (point-min))
+            (forward-line 1)
+            (let ((text (plist-get (ema-context 'defun) :text)))
+              (should (string-match-p "org subtree" text))
+              (should (string-match-p "deep" text))
+              (should-not (string-match-p "Three" text)))
+            (should (string-match-p "\\[context: line" (plist-get (ema-context) :text)))))
+      (delete-directory dir t))))
+
+(ert-deftest ema-turn-edits-are-one-undo-step ()
+  (let ((file (make-temp-file "ema-undo" nil ".txt" "one two three\n")))
+    (unwind-protect
+        (with-current-buffer (find-file-noselect file)
+          (buffer-enable-undo)
+          (ema-edit file "one" "1")
+          (undo-boundary)
+          (ema-edit file "two" "2")
+          (ema--close-change-groups)
+          (should (equal (buffer-string) "1 2 three\n"))
+          (undo-boundary)
+          (primitive-undo 1 (cdr (memq nil buffer-undo-list)))
+          (should (equal (buffer-string) "one two three\n"))
+          (set-buffer-modified-p nil)
+          (kill-buffer))
+      (delete-file file))))
+
+(ert-deftest ema-notes-navigate ()
+  (with-temp-buffer
+    (insert "a\nb\nc\nd\n")
+    (cl-letf (((symbol-function 'ema--side-window) #'ignore)
+              ((symbol-function 'ema--push-mark) #'ignore))
+      (ema-note (current-buffer) 2 "first")
+      (ema-note (current-buffer) 4 "second"))
+    (goto-char (point-min))
+    (ema-next-note)
+    (should (= (line-number-at-pos) 2))
+    (ema-next-note)
+    (should (= (line-number-at-pos) 4))
+    (ema-previous-note)
+    (should (= (line-number-at-pos) 2))
+    (should (equal (ema-notes) '("2: first" "4: second")))))
 
 (provide 'ema-tests)
 ;;; ema-tests.el ends here
