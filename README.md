@@ -1,34 +1,15 @@
 # ema
 
-A minimal agent that lives in your Emacs. It helps you write and review
-code. It does not write the code in your place.
+A minimal agent that lives in your Emacs. It helps you write and
+review code. So it's more like an integrated helper, not an autonomous
+agent. Moves you closer to the code, slows you down a little bit.
 
-- **You are the author.** ema reads, explains, points at code, puts
-  review notes on lines and proposes changes as diffs that you accept
-  or decline.
-- **It is synchronous on purpose.** ema does not run in the background
-  and does not act between your messages. You focus on one thing, you
-  ask, ema does one turn in front of you, and you go on. One turn runs
-  at a time in the whole Emacs.
-- **It is Emacs all the way down.** The model has one tool: an Emacs
-  Lisp cell that runs in your live session. It sees your windows, uses
-  your packages and answers through your buffers, your minibuffer and
-  your keys.
+The model has one tool: an Emacs Lisp cell that runs in your live
+session. It sees your windows, uses your packages and answers
+through your buffers, your minibuffer and your keys.
 
-## A turn
-
-1. You stand on a function and press `C-c e r`.
-2. ema gets the function with its line numbers, the file and the
-   diagnostics there.
-3. It reads what it needs: usages through the language server, a
-   search of the project, the tests.
-4. Notes appear under the lines that have a finding. The chat gets a
-   short summary, with `file:line` links.
-5. You ask for a fix. A diff opens beside the chat; you press `y` or
-   `n`.
-
-While this runs, the mode line shows what ema does, and `C-c C-k`
-stops it.
+I decided to distribute it as source code, not as package, with the
+idea that when you need something you just extend `ema` in place.
 
 ## Core capabilities
 
@@ -239,7 +220,3 @@ permissions. There is no sandbox. The prompt tells it to confirm before
 an action that is hard to undo, and installs, agenda changes and
 suggestions ask you in the minibuffer; nothing else enforces that. Use
 it where you would let a colleague type at your keyboard.
-
-## Not built yet
-
-- Token prices and speed in the status bar (see `todo.org`).
