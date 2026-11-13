@@ -211,9 +211,25 @@ A trim costs one prompt cache miss; a wide gap to `ema-context-high'
 makes trims rare."
   :type 'integer :group 'ema)
 
+(defun ema-next-link ()
+  "In the input, TAB as usual; in the transcript, go to the next link.
+After the last link, go to the input."
+  (interactive)
+  (if (>= (point) ema--input)
+      (indent-for-tab-command)
+    (unless (forward-button 1 nil nil t)
+      (goto-char (point-max)))))
+
+(defun ema-previous-link ()
+  "Go to the previous link; from the input, to the last one."
+  (interactive)
+  (backward-button 1 nil nil t))
+
 (defvar ema-mode-map
   (let ((map (make-sparse-keymap)))
     (define-key map (kbd "RET") #'ema-send-or-newline)
+    (define-key map (kbd "TAB") #'ema-next-link)
+    (define-key map (kbd "<backtab>") #'ema-previous-link)
     (define-key map (kbd "C-c C-c") #'ema-send)
     (define-key map (kbd "C-j") #'newline)
     (define-key map (kbd "C-c C-k") #'ema-abort)
@@ -226,11 +242,21 @@ makes trims rare."
     (define-key map (kbd "M-n") #'ema-history-next)
     map))
 
+(defun ema--seal-transcript (beg end _len)
+  "Make the text written between BEG and END above the input read-only.
+It is an `after-change-functions' function: Emacs removes a
+`before-change-functions' function that signals an error, so a guard
+there works only once.  ema's own writes bind `inhibit-read-only'."
+  (when (and ema--input (< beg ema--input))
+    (with-silent-modifications
+      (add-text-properties beg (min end ema--input) '(read-only t)))))
+
 (define-derived-mode ema-mode text-mode "ema"
   "The ema chat.  Type after the prompt; RET sends, C-j inserts a newline.
 Each project has its own chat; the chat keeps its project across mode
-changes."
+changes.  Everything above the prompt is read-only."
   (visual-line-mode 1)
+  (add-hook 'after-change-functions #'ema--seal-transcript nil t)
   (setq-local header-line-format '(:eval (ema--header)))
   (setq-local mode-line-buffer-identification
               (list (propertized-buffer-identification "%b")

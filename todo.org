@@ -84,3 +84,12 @@ Allow each project to choose its own provider/model (e.g. via
 global `ema-provider'.
 maybe we can store configs to sqlite, also global and per project
 but redefine/set it via dir locals, hinting it in ui somehow
+
+* DONE make ema output readonly
+CLOSED: [2026-11-13 Fri 17:30]
+
+* TODO support C-o in ema output to open in another buffer
+unclear what exactly: show a link's file in another window, or open the chat/ema buffers in another window
+
+* TODO got region selection after submitting
+after cells eval ends and i got new input invitation, new region appears

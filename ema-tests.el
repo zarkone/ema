@@ -23,6 +23,21 @@ The directory is not a project, so the chat is \"*ema*\"."
        (ema-tests--kill-chats)
        (delete-directory ema-directory t))))
 
+(ert-deftest ema-transcript-is-read-only ()
+  (ema-tests--with-chat
+   (with-current-buffer (ema--chat-buffer)
+     (ema--insert "\nreply\n")
+     ;; refused every time, not only the first (a before-change hook would reset itself)
+     (dotimes (_ 3)
+       (should-error (progn (goto-char 3) (insert "X")) :type 'text-read-only)
+       (should-error (progn (goto-char ema--input) (delete-char -1)) :type 'text-read-only))
+     (goto-char ema--input)
+     (insert "typed")
+     (should (equal (buffer-substring-no-properties ema--input (point-max)) "typed"))
+     (ema--insert "\nmore\n")
+     (should-error (progn (goto-char 3) (insert "X")) :type 'text-read-only)
+     (should (equal (buffer-substring-no-properties ema--input (point-max)) "typed")))))
+
 (ert-deftest ema-cell-value-output-error ()
   (should (equal (ema-eval-cell "(+ 1 2)") "=> 3"))
   (should (equal (ema-eval-cell "(princ \"hi\") (list 1 2)") "output:\nhi\n=> (1 2)"))
@@ -178,9 +193,9 @@ The directory is not a project, so the chat is \"*ema*\"."
                 (lambda (_s messages &rest _) (setq sent messages) nil))
                ((symbol-function 'ema--show-chat) #'ignore))
        (should (string-match-p "ema-act-tighten"
-                               (ema-action-save 'tighten "Make this shorter." "t" 'line)))
+                               (ema-action-save 'tighten "Make this shorter." "y" 'line)))
        (should-error (ema-action-save 'other "x" "r"))   ; r is review's key
-       (should (eq (lookup-key ema-command-map "t") 'ema-act-tighten))
+       (should (eq (lookup-key ema-command-map "y") 'ema-act-tighten))
        (with-temp-buffer
          (insert "first\nsecond\n")
          (goto-char (point-min))
