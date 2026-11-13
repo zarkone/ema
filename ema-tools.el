@@ -693,13 +693,18 @@ author.  OLD must occur exactly once (see `ema-edit')."
 
 ;;;; Status: read Emacs's, report your own
 
-(defvar ema-status-text nil
+(defvar-local ema-status-text nil
   "What the agent says it is doing; shown in the chat header.")
+
+(defvar ema--current-chat nil
+  "The chat buffer whose cell runs now; bound while a cell runs.")
 
 (ema-deftool ema-status (text)
   "Tell the user what you are doing now: TEXT appears in the chat header.
 Use it before a slow step.  It is cleared when your turn ends."
-  (setq ema-status-text text)
+  (if (buffer-live-p ema--current-chat)
+      (with-current-buffer ema--current-chat (setq ema-status-text text))
+    (setq ema-status-text text))
   (force-mode-line-update t)
   (redisplay)
   text)

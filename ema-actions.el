@@ -283,6 +283,7 @@ the command in other places to send several references in one message."
 (define-key ema-command-map "]" #'ema-next-note)
 (define-key ema-command-map "[" #'ema-previous-note)
 (define-key ema-command-map "m" #'ema-menu)
+(define-key ema-command-map "h" #'ema-resume)
 (fset 'ema-command-map ema-command-map)
 
 (defun ema-run-action (name)
@@ -356,6 +357,7 @@ shortcuts that you or ema added."
          ["Chat"
           ("o" "open" ema)
           ("n" "new conversation" ema-new)
+          ("h" "resume from history" ema-resume)
           ("k" "stop" ema-abort)
           ("p" "provider and model" ema-switch-provider)
           ("l" "cell log" ema-cells)]])

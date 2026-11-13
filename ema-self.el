@@ -298,7 +298,7 @@ file.
 ;;;; Restart
 
 (defconst ema--source-files
-  '("ema-llm" "ema-tools" "ema-self" "ema-org" "ema" "ema-actions")
+  '("ema-llm" "ema-tools" "ema-history" "ema-self" "ema-org" "ema" "ema-actions")
   "Source files of ema in dependency order, leaves first.")
 
 (ema-deftool ema-self-files ()
@@ -367,10 +367,11 @@ the next cell; values of variables (keymaps among them) are kept."
 Meant for development.  Loads the .el files, never stale .elc.  Values
 of `defvar's (keymaps among them) are kept; only the code is replaced."
   (interactive)
-  (let ((chat (get-buffer "*ema*")))
-    (when (and chat (buffer-local-value 'ema--busy chat)
-               (not (yes-or-no-p "ema is working; reload anyway? ")))
-      (user-error "ema-restart cancelled")))
+  (when (and (seq-some (lambda (b) (buffer-local-value 'ema--busy b))
+                       (seq-filter (lambda (b) (local-variable-p 'ema--busy b))
+                                   (buffer-list)))
+             (not (yes-or-no-p "ema is working; reload anyway? ")))
+    (user-error "ema-restart cancelled"))
   (dolist (name ema--source-files)
     (load (expand-file-name (concat name ".el") ema-source-directory)
           nil 'nomessage 'nosuffix))

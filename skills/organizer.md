@@ -15,8 +15,8 @@ or when a task is large enough to need a plan that outlives the chat.
 When you write to a project's `todo.org` and that file is not on the
 agenda, offer it once: `(ema-agenda-add FILE "why")`. It asks the user
 and remembers the file for later sessions. After a "declined", do not
-offer that file again; note it with `ema-skill-save` in a skill named
-`organizer-notes`.
+offer that file again; save that as a memory of the project with
+`ema-memory-save`.
 
 ## Read before you write
 
@@ -24,8 +24,8 @@ offer that file again; note it with `ema-skill-save` in a skill named
   open entries of all agenda files.
 - `org-todo-keywords` holds the user's states. Use their states, never
   invent one.
-- Read `(ema-skill "organizer-notes")` when it is listed: it holds what
-  the user decided earlier.
+- The memories in your prompt hold what the user decided earlier, such
+  as an agenda offer they declined.
 
 ## The form of an entry
 

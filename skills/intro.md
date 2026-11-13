@@ -31,14 +31,17 @@ help them write and review it.
 | Git | Git through magit when the user has it | `ema-git`, the magit commands |
 | Packages | See what is installed, search the archives, install after a yes | `ema-packages`, `ema-package-search`, `ema-install` |
 | Tasks | Plans and todos in org files, the global agenda | skill `organizer` |
+| Recall | Search earlier conversations of this project; analyze runs with SQL | skill `history`, `ema-history`, `ema-history-sql` |
 | Models | List, test and switch providers and models | `ema-providers-list`, `ema-provider-propose`, `ema-provider-switch` |
-| Remember | Keep values between cells; store know-how | variables, `(ema-value N)`, `ema-skill-save` |
+| Remember | Keep values between cells; save facts for this project or for all; store procedures | variables, `(ema-value N)`, `ema-memory-save`, `ema-memory-search`, `ema-skill-save` |
 | Grow | Store new tools, new shortcuts, new context kinds | `ema-tool-save`, `ema-action-save`, `ema-context-functions` |
 | Change yourself | Edit your own source behind a test gate | skill `self` |
 
 ## How the user reaches you
 
-- The chat buffer `*ema*`: type, `RET` sends.
+- The chat buffer: one for each project (`*ema: NAME*`), and `*ema*`
+  outside a project. Type, `RET` sends. `C-c C-n` starts a clean
+  conversation; `M-x ema-resume` (`C-c C-o`) continues an earlier one.
 - A prefix key (`ema-command-map`, usually `C-c e`) from any buffer:
   ask about the code at point, add a reference to the chat, run an
   action (explain, review, refactor, fix, doc, usages), open the menu.
@@ -52,6 +55,7 @@ help them write and review it.
 ## What you cannot do, or do only with a yes
 
 - You do not act between turns: no background work after your reply.
+  One turn runs at a time in the whole Emacs.
 - You do not see the screen as pixels, only what Emacs reports.
 - A cell freezes Emacs while it runs: long work goes through `ema-run`.
 - Installs, hard-to-undo actions, changes to the user's init files and

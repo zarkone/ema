@@ -1,6 +1,12 @@
 # ema
 
-A minimal agent that lives in Emacs.
+A minimal agent that lives in Emacs. It helps you work on your code;
+it does not work in your place.
+
+ema is synchronous on purpose. It does not run in the background and it
+does not act on its own between your messages. You focus on one thing,
+you ask, ema does one turn in front of you, and you go on. One turn runs
+at a time, in the whole Emacs.
 
 - **One tool.** The model has a single tool, `eval`: an Emacs Lisp cell
   that runs in your live Emacs.
@@ -83,7 +89,9 @@ keyring.
 | `ema-abort` | `C-c C-k` | Stop the running turn |
 | `ema-continue` | `C-c C-r` | Call the model again after an error |
 | `ema-switch-provider` | `C-c C-p` | Change provider or model |
-| `ema-new` | `C-c C-n` | New conversation; re-reads tools and skills |
+| `ema-new` | `C-c C-n` | New conversation with a clean context; re-reads tools and skills |
+| `ema-resume` | `C-c C-o` | Continue an earlier conversation of this project |
+| `ema-forget` | | Delete a conversation from the history |
 
 `C-g` stops a cell that runs too long.
 
@@ -146,6 +154,33 @@ it in `~/.emacs.d/ema/actions.eld`.
   its full result, updated live. When the turn ends, the queue becomes
   one line (`▸ 7 cells, #1–#7`) that links into the log.
 
+## Projects and history
+
+- **One chat for each project.** `M-x ema` and the `C-c e` keys go to
+  the chat of the current buffer's project: `*ema: NAME*`. Buffers
+  outside a project share `*ema*`. All chats share one Emacs, so tools,
+  skills and variables are common.
+- **Everything is recorded** in `~/.emacs.d/ema/history.sqlite`
+  (SQLite is built into Emacs): conversations with their project,
+  messages, model calls with tokens and duration, cells with code and
+  result. Set `ema-history-enabled` to nil to turn it off. The database
+  holds what the model saw, file contents included; it stays on your
+  machine.
+- **The window.** ema sends the whole conversation until the input
+  passes `ema-context-high` tokens (120k). Then the oldest turns leave
+  the window, down to about `ema-context-low` (60k), and a note with
+  your earlier requests takes their place. A trim costs one cache miss;
+  between trims the prompt cache holds. Nothing is deleted.
+- **Memory.** The same database has a `memories` table: short facts
+  with a title of at most 200 characters, for one project or global.
+  The prompt lists the newest titles (`ema-memory-window`: 15 global, 25
+  of the project) and says how many more exist. ema saves, reads and
+  searches them with `ema-memory-save`, `ema-memory`,
+  `ema-memory-search` and `ema-memory-delete`.
+- **ema reads its history** with `ema-history` (full-text search) and
+  `ema-history-sql` (read-only SQL); the `history` skill has queries
+  for the analysis of runs.
+
 ## Files
 
 | File | Holds |
@@ -153,6 +188,7 @@ it in `~/.emacs.d/ema/actions.eld`.
 | `ema.el` | The cell evaluator, the chat buffer, the loop |
 | `ema-llm.el` | Providers (Anthropic and OpenAI-compatible wire formats), secrets, HTTP |
 | `ema-tools.el` | `ema-deftool` and the built-in tools |
+| `ema-history.el` | The SQLite history: conversations, messages, calls, cells |
 | `ema-self.el` | Provider test, switch and proposal; the saved configuration |
 | `ema-org.el` | Todos in org files, the agenda |
 | `ema-actions.el` | Context at point, the prefix keymap, the menu, actions |

@@ -7,14 +7,20 @@
 (require 'dired)
 (require 'org)
 
+(defun ema-tests--kill-chats ()
+  (dolist (b (ema--chats)) (kill-buffer b))
+  (ema-history-close))
+
 (defmacro ema-tests--with-chat (&rest body)
-  "Run BODY with a fresh chat buffer and a scratch state directory."
+  "Run BODY with a fresh chat buffer and a scratch state directory.
+The directory is not a project, so the chat is \"*ema*\"."
   `(let* ((ema-directory (file-name-as-directory (make-temp-file "ema-test" t)))
+          (default-directory ema-directory)
           (ema-tools (copy-sequence ema-tools)))
      (unwind-protect
-         (progn (when (get-buffer "*ema*") (kill-buffer "*ema*"))
+         (progn (ema-tests--kill-chats)
                 ,@body)
-       (when (get-buffer "*ema*") (kill-buffer "*ema*"))
+       (ema-tests--kill-chats)
        (delete-directory ema-directory t))))
 
 (ert-deftest ema-cell-value-output-error ()
@@ -440,6 +446,172 @@
     (should (string-match-p (concat "^" skill " — ") (ema-skills-index))))
   (let ((ema--self-check-time nil))
     (should-error (ema-self-reload))))
+
+(defun ema-tests--reply (&rest blocks)
+  (list :content (vconcat blocks) :stop "end_turn" :usage '(:in 10 :cached 5 :out 3)))
+
+(ert-deftest ema-history-records-and-resumes ()
+  (ema-tests--with-chat
+   (let ((script (list (list :content (vector '(:type "text" :text "I look.")
+                                              '(:type "tool_use" :id "t1" :name "eval"
+                                                :input (:code "(* 6 7)")))
+                             :stop "tool_use" :usage '(:in 100 :cached 0 :out 9))
+                       (ema-tests--reply '(:type "text" :text "It is 42 zebra.")))))
+     (cl-letf (((symbol-function 'ema-llm-request)
+                (lambda (_s _m _t callback &rest _) (funcall callback (pop script)) nil)))
+       (ema-submit "what is six times seven?"))
+     (let ((id (with-current-buffer "*ema*" ema--conversation)))
+       (should (integerp id))
+       (should (equal (ema-history-sql "select count(*) from messages") '((4))))
+       (should (equal (ema-history-sql "select n, status, result from cells")
+                      '((1 "done" "=> 42"))))
+       (should (equal (ema-history-sql "select tokens_in, stop from calls order by id")
+                      '((100 "tool_use") (10 "end_turn"))))
+       (should (equal (ema-history-sql "select title, project from conversations")
+                      '(("what is six times seven?" nil))))
+       (should (string-match-p "assistant 3 | It is 42 \\[zebra\\]" (ema-history "zebra")))
+       (should (string-match-p "cell 1" (ema-history "6 7")))
+       (should (equal (ema-history "giraffe") "no hits"))
+       (should-error (ema-history-sql "delete from cells"))
+       ;; the database is read-only during the call: a hidden write does nothing
+       (ema-history-sql "with x as (select 1) delete from cells")
+       (should (equal (ema-history-sql "select count(*) from cells") '((1))))
+       ;; a new conversation, then back
+       (with-current-buffer "*ema*"
+         (ema-new)
+         (should-not ema--messages)
+         (should-not ema--conversation))
+       (ema-resume id)
+       (with-current-buffer "*ema*"
+         (should (= 4 (length ema--messages)))
+         (should (= 1 ema--cell-count))
+         (should (equal (plist-get (aref (plist-get (nth 2 ema--messages) :content) 0)
+                                   :content)
+                        "=> 42"))
+         (should (string-match-p "› what is six times seven\\?" (buffer-string)))
+         (should (string-match-p "It is 42 zebra" (buffer-string))))
+       ;; the resumed conversation goes on in the same row
+       (let ((script (list (ema-tests--reply '(:type "text" :text "Yes.")))) sent)
+         (cl-letf (((symbol-function 'ema-llm-request)
+                    (lambda (_s m _t callback &rest _)
+                      (setq sent m) (funcall callback (pop script)) nil)))
+           (ema-submit "sure?"))
+         (should (= 5 (length sent)))
+         (should (equal (ema-history-sql "select count(*) from conversations") '((1))))
+         (should (equal (ema-history-sql "select count(*) from messages") '((6)))))
+       (cl-letf (((symbol-function 'yes-or-no-p) (lambda (&rest _) t)))
+         (ema-forget id))
+       (should (equal (ema-history-sql "select count(*) from messages") '((0))))))))
+
+(ert-deftest ema-window-trims-in-steps ()
+  (ema-tests--with-chat
+   (let ((ema-context-high 1000) (ema-context-low 500) sent
+         (usage 100))
+     (cl-letf (((symbol-function 'ema-llm-request)
+                (lambda (_s m _t callback &rest _)
+                  (push m sent)
+                  (funcall callback
+                           (list :content (vector (list :type "text"
+                                                        :text (make-string 400 ?x)))
+                                 :stop "end_turn" :usage (list :in usage :cached 0 :out 1)))
+                  nil)))
+       (ema-submit "first request")
+       (ema-submit "second request")
+       (setq usage 2000)
+       (ema-submit "third request")       ; sent whole; its usage passes the mark
+       (should (= 5 (length (car sent))))
+       (setq usage 300)
+       (ema-submit "fourth request")
+       (with-current-buffer "*ema*"
+         (should (= 8 (length ema--messages)))
+         (should (> ema--window-start 0))
+         (should (ema--request-message-p (nth ema--window-start ema--messages))))
+       (let* ((window (car sent))
+              (first (aref (plist-get (car window) :content) 0)))
+         (should (< (length window) 7))
+         (should (string-match-p "not shown" (plist-get first :text)))
+         (should (string-match-p "- first request" (plist-get first :text))))
+       ;; stable until the next trim: the same start, the same note
+       (let ((start (with-current-buffer "*ema*" ema--window-start))
+             (note (plist-get (aref (plist-get (car (car sent)) :content) 0) :text)))
+         (ema-submit "fifth request")
+         (should (= start (with-current-buffer "*ema*" ema--window-start)))
+         (should (equal note (plist-get (aref (plist-get (car (car sent)) :content) 0)
+                                        :text))))
+       (should (equal (ema-history-sql "select window_start > 0 from conversations")
+                      '((1))))))))
+
+(ert-deftest ema-one-chat-per-project-one-turn-at-a-time ()
+  (ema-tests--with-chat
+   (let* ((root (file-name-as-directory (make-temp-file "ema-proj" t)))
+          (project-find-functions (list (lambda (dir)
+                                          (and (string-prefix-p root (expand-file-name dir))
+                                               (cons 'transient root))))))
+     (unwind-protect
+         (let ((chat (let ((default-directory root)) (ema--chat-buffer)))
+               (plain (ema--chat-buffer)))
+           (should (equal (buffer-name plain) "*ema*"))
+           (should (string-match-p "\\`\\*ema: ema-proj" (buffer-name chat)))
+           (should (eq chat (let ((default-directory root)) (ema--chat-buffer))))
+           (should (equal (buffer-local-value 'ema--project chat) root))
+           (should (eq chat (with-current-buffer chat (ema--chat-buffer))))
+           (cl-letf (((symbol-function 'ema-llm-request) (lambda (&rest _) nil)))
+             (let ((default-directory root)) (ema-submit "in the project"))
+             (should (buffer-local-value 'ema--busy chat))
+             (should-error (ema-submit "elsewhere") :type 'user-error)
+             (should (string-match-p "ema\\[ema-proj" (ema-mode-line)))
+             (with-current-buffer chat (ema-abort)))
+           (should (equal (ema-history-sql "select project from conversations")
+                          (list (list root)))))
+       (delete-directory root t)))))
+
+(ert-deftest ema-memory-window-in-the-prompt ()
+  (ema-tests--with-chat
+   (let* ((root "/tmp/ema-memory-project/")
+          (chat (generate-new-buffer " *ema-memory-chat*"))
+          (ema-memory-window '(1 . 2)))
+     (unwind-protect
+         (progn
+           (with-current-buffer chat (setq-local ema--project root))
+           (let ((ema--current-chat chat))
+             (should (string-match-p "(no memories yet)" (ema-memory-section root)))
+             (should (equal (ema-memory-save "Tests run with make test" "since 2026")
+                            "memory #1 saved (project /tmp/ema-memory-project/)"))
+             (ema-memory-save "The parser lives in parse.el")
+             (ema-memory-save "Third fact about zebras" "striped")
+             (should (equal (ema-memory-save "The user wants short replies" "" t)
+                            "memory #4 saved (global)"))
+             (ema-memory-save "The user's shell is fish" "" t)
+             (should-error (ema-memory-save (make-string 201 ?x)))
+             (should-error (ema-memory-save "two\nlines"))
+             (should-error (ema-memory-save ""))
+             ;; the SQL limit holds without the tool too
+             (should-error (sqlite-execute
+                            (ema--history)
+                            "insert into memories (title, created, updated) values (?, 0, 0)"
+                            (list (make-string 201 ?x))))
+             (let ((section (ema-memory-section root)))
+               (should (string-match-p "Global:\n- #5 The user's shell is fish\n" section))
+               (should (string-match-p "This project:\n- #3 Third fact about zebras\n- #2 The parser"
+                                       section))
+               (should-not (string-match-p "#1 " section))
+               (should (string-match-p "(1 more for this project, 1 more global: " section)))
+             (should (string-match-p "Global:" (ema-memory-section nil)))
+             (should-not (string-match-p "This project:" (ema-memory-section nil)))
+             (should (equal (ema-memory-search "zebras striped")
+                            "#3 [project] Third fact about zebras"))
+             (should (string-match-p "#4 \\[global\\]" (ema-memory-search "user")))
+             (should (equal (ema-memory-search "100%") "no memories match"))
+             (should (string-match-p "since 2026" (ema-memory 1)))
+             (ema-memory-save "Tests run with make check" "changed" nil 1)
+             (should (string-match-p "make check" (ema-memory 1)))
+             (ema-memory-delete 3)
+             (should-error (ema-memory 3)))
+           ;; another project sees only the global ones
+           (with-current-buffer chat (setq-local ema--project "/tmp/other/"))
+           (let ((ema--current-chat chat))
+             (should-not (string-match-p "parser" (ema-memory-search)))))
+       (kill-buffer chat)))))
 
 (provide 'ema-tests)
 ;;; ema-tests.el ends here

@@ -33,10 +33,18 @@ Open question: the prices for claude-opus-5-5 (input, cache read,
 cache write, output per Mtok) — the user fills them in; until then
 steps 1 and 3 work on tokens only.
 
-* TODO save a running window of previous cells :claude:
+* DONE save a running window of previous cells :claude:
 archive previous to tar.gz. default 1000 probably?
 
-* TODO Layered history support, like in anybao :claude:
+Done differently: every cell goes to the SQLite history (ema-history.el);
+no archive step.
+
+* DONE Layered history support, like in anybao :claude:
+Done as a simpler design: the whole conversation is in the SQLite
+history; the model sees a window that is trimmed in steps
+(=ema-context-high= / =ema-context-low=), with a note of the earlier
+requests.  No rollup chunks.
+
 Hierarchical history: newest turns at full resolution, older turns
 rolled up into summary chunks by level (L1, L2, …), each expandable by
 its seq ("[earlier context, compressed — expand a chunk by its #seq]").
