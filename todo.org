@@ -1,17 +1,15 @@
 #+TITLE: ema todo
 
-* TODO Token usage and price in the status bar
+* TODO Token usage in the status bar
 SCHEDULED: <2026-11-13 Fri>
 Four small steps, each as its own suggestion:
 
-1. Per-run counter: beside the conversation total =ema--usage=, keep a
-   per-run total that resets at each sent message; =ema--add-usage=
-   (ema.el) adds to both.
 3. Status bar: =ema-mode-line= shows only while busy now.  Make it
-   always show e.g. =ema ↑35k ⚡716k ↓11k $4.10 (run $0.31)=, plus the
+   always show e.g. =ema ↑35k ⚡716k=, plus the
    spinner when busy; the chat header shows the same.
 4. OpenAI parser always reports =:cached 0=; read
    =usage.prompt_tokens_details.cached_tokens=
+
 Also wanted: token speed — tokens/sec, e.g. out tokens
 over the seconds of each model call, shown in the status bar or the
 header while streaming/completing.
