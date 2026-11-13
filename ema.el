@@ -272,31 +272,6 @@ changes."
   (seq-filter (lambda (b) (with-current-buffer b (derived-mode-p 'ema-mode)))
               (buffer-list)))
 
-(defun ema-mode-line ()
-  "The global indicator: a spinner and the activity of each chat that works."
-  (mapconcat
-   (lambda (chat)
-     (with-current-buffer chat
-       (if ema--busy
-           (propertize (format " ema%s %s %s "
-                               (if (string-empty-p ema--tag) "" (format "[%s]" ema--tag))
-                               (ema--spinner) (ema--activity))
-                       'face 'ema-notice
-                       'help-echo "ema is working; mouse-1 shows the chat"
-                       'mouse-face 'mode-line-highlight
-                       'local-map (let ((map (make-sparse-keymap)))
-                                    (define-key map [mode-line mouse-1]
-                                                (lambda () (interactive)
-                                                  (display-buffer chat ema-display-action)))
-                                    map))
-         "")))
-   (ema--chats) ""))
-(put 'ema-mode-line 'risky-local-variable t)
-
-(unless (member '(:eval (ema-mode-line)) global-mode-string)
-  (setq global-mode-string
-        (append (or global-mode-string '("")) '((:eval (ema-mode-line))))))
-
 (defun ema--human-number (n)
   "Format token count N rounded: 950, 1.2K, 35K, 1.2M, 35M."
   (cl-flet ((scaled (x suffix)
@@ -312,7 +287,7 @@ changes."
   (format "  %s/%s" ema-provider (plist-get (ema-provider-plist) :model)))
 
 (defun ema--header ()
-  (format " %sin %s (cached %s)  out %s (%s/s)%s"
+  (format " %s↑%s ⚡%s  out %s (%s/s)%s"
           (if (string-empty-p ema--tag) "" (concat ema--tag "  ·  "))
           (ema--human-number (or (plist-get ema--usage :in) 0))
           (ema--human-number (or (plist-get ema--usage :cached) 0))
@@ -652,16 +627,54 @@ in place of TEXT (an action shows its name, not its pre-prompt)."
                                     (last earlier 30) "\n"))
                "")))))
 
+(defun ema--answer-tool-uses (messages)
+  "Return MESSAGES with every tool_use answered by a tool_result.
+A turn stopped before its cells ran leaves a tool_use without a result;
+the API rejects the next request then.  The missing results are added
+(as errors) at the start of the following user message, or as a message
+of their own at the end.  The stored history is not changed."
+  (let (out)
+    (while messages
+      (let ((m (pop messages)))
+        (push m out)
+        (when (equal (plist-get m :role) "assistant")
+          (let* ((next (car messages))
+                 (user (and next (equal (plist-get next :role) "user")))
+                 (answered (and user
+                                (mapcar (lambda (b) (plist-get b :tool_use_id))
+                                        (plist-get next :content))))
+                 (missing (seq-remove
+                           (lambda (id) (member id answered))
+                           (delq nil (mapcar (lambda (b)
+                                               (and (equal (plist-get b :type) "tool_use")
+                                                    (plist-get b :id)))
+                                             (plist-get m :content))))))
+            (when missing
+              (let ((fill (vconcat
+                           (mapcar (lambda (id)
+                                     (list :type "tool_result" :tool_use_id id
+                                           :content "error: interrupted before this cell ran"
+                                           :is_error t))
+                                   missing))))
+                (if user
+                    (setq messages
+                          (cons (list :role "user"
+                                      :content (vconcat fill (plist-get next :content)))
+                                (cdr messages)))
+                  (push (list :role "user" :content fill) out))))))))
+    (nreverse out)))
+
 (defun ema--window-messages ()
   "Return the messages to send: the window, with a note for what came before."
-  (if (= ema--window-start 0)
-      ema--messages
-    (let* ((window (nthcdr ema--window-start ema--messages))
-           (first (car window)))
-      (cons (list :role (plist-get first :role)
-                  :content (vconcat (vector (list :type "text" :text (ema--window-note)))
-                                    (plist-get first :content)))
-            (cdr window)))))
+  (ema--answer-tool-uses
+   (if (= ema--window-start 0)
+       ema--messages
+     (let* ((window (nthcdr ema--window-start ema--messages))
+            (first (car window)))
+       (cons (list :role (plist-get first :role)
+                   :content (vconcat (vector (list :type "text" :text (ema--window-note)))
+                                     (plist-get first :content)))
+             (cdr window))))))
 
 (defun ema--trim-window ()
   "When the input passed `ema-context-high', move the window start forward.

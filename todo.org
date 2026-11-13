@@ -1,12 +1,14 @@
 #+TITLE: ema todo
 
-* TODO Token usage in the status bar
+* DONE Token usage in the status bar
+CLOSED: [2026-11-13 Fri 03:06]
 SCHEDULED: <2026-11-13 Fri>
 Four small steps, each as its own suggestion:
 
-** TODO Status bar: =ema-mode-line= shows only while busy now.
-Make it always show e.g. =ema ↑35k ⚡716k=, plus the
-   spinner when busy; the chat header shows the same.
+** DONE Status bar: =ema-mode-line= shows only while busy now.
+CLOSED: [2026-11-13 Fri 03:06]
+Done differently: the mode-line item is gone; the chat header shows
+=↑in ⚡cached out (speed)= plus the spinner when busy.
 ** DONE OpenAI parser always reports =:cached 0=; read
 CLOSED: [2026-11-13 Fri 02:32]
    =usage.prompt_tokens_details.cached_tokens=

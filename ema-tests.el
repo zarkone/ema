@@ -616,7 +616,6 @@ The directory is not a project, so the chat is \"*ema*\"."
              (let ((default-directory root)) (ema-submit "in the project"))
              (should (buffer-local-value 'ema--busy chat))
              (should-error (ema-submit "elsewhere") :type 'user-error)
-             (should (string-match-p "ema\\[ema-proj" (ema-mode-line)))
              (with-current-buffer chat (ema-abort)))
            (should (equal (ema-history-sql "select project from conversations")
                           (list (list root)))))
