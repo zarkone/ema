@@ -293,5 +293,24 @@ file.
           (abbreviate-file-name ema-source-directory)
           (abbreviate-file-name ema-directory)))
 
+;;;; Restart
+
+(defconst ema--source-files '("ema-llm" "ema-tools" "ema-self" "ema" "ema-actions")
+  "Source files of ema in dependency order, leaves first.")
+
+(defun ema-restart ()
+  "Reload all of ema's source files, in dependency order.
+Meant for development.  Loads the .el files, never stale .elc.  Values
+of `defvar's (keymaps among them) are kept; only the code is replaced."
+  (interactive)
+  (let ((chat (get-buffer "*ema*")))
+    (when (and chat (buffer-local-value 'ema--busy chat)
+               (not (yes-or-no-p "ema is working; reload anyway? ")))
+      (user-error "ema-restart cancelled")))
+  (dolist (name ema--source-files)
+    (load (expand-file-name (concat name ".el") ema-source-directory)
+          nil 'nomessage 'nosuffix))
+  (message "ema reloaded: %s" (mapconcat #'identity ema--source-files " ")))
+
 (provide 'ema-self)
 ;;; ema-self.el ends here
