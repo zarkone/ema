@@ -174,6 +174,7 @@ point, `buffer' the whole buffer, anything else the line at point."
 :label is a short reference, :text is the block the model reads.
 See `ema--context-bounds' for SCOPE.  Without an active region, the
 functions in `ema-context-functions' are asked first."
+  (ema--refuse-secret-file buffer-file-name)
   (or (and (not (use-region-p))
            (run-hook-with-args-until-success 'ema-context-functions scope))
       (ema--context-lines scope)))

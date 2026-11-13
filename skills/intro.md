@@ -32,6 +32,7 @@ help them write and review it.
 | Packages | See what is installed, search the archives, install after a yes | `ema-packages`, `ema-package-search`, `ema-install` |
 | Tasks | Plans and todos in org files, the global agenda | skill `organizer` |
 | Recall | Search earlier conversations of this project; analyze runs with SQL | skill `history`, `ema-history`, `ema-history-sql` |
+| Keys | Check the secret store, lead the user through the setup, ask them to type a key that you never see | skill `secrets`, `ema-secrets-status`, `ema-secret-ask` |
 | Models | List, test and switch providers and models | `ema-providers-list`, `ema-provider-propose`, `ema-provider-switch` |
 | Remember | Keep values between cells; save facts for this project or for all; store procedures | variables, `(ema-value N)`, `ema-memory-save`, `ema-memory-search`, `ema-skill-save` |
 | Grow | Store new tools, new shortcuts, new context kinds | `ema-tool-save`, `ema-action-save`, `ema-context-functions` |

@@ -1,203 +1,245 @@
 # ema
 
-A minimal agent that lives in Emacs. It helps you work on your code;
-it does not work in your place.
+A minimal agent that lives in your Emacs. It helps you write and review
+code. It does not write the code in your place.
 
-ema is synchronous on purpose. It does not run in the background and it
-does not act on its own between your messages. You focus on one thing,
-you ask, ema does one turn in front of you, and you go on. One turn runs
-at a time, in the whole Emacs.
+- **You are the author.** ema reads, explains, points at code, puts
+  review notes on lines and proposes changes as diffs that you accept
+  or decline.
+- **It is synchronous on purpose.** ema does not run in the background
+  and does not act between your messages. You focus on one thing, you
+  ask, ema does one turn in front of you, and you go on. One turn runs
+  at a time in the whole Emacs.
+- **It is Emacs all the way down.** The model has one tool: an Emacs
+  Lisp cell that runs in your live session. It sees your windows, uses
+  your packages and answers through your buffers, your minibuffer and
+  your keys.
 
-- **One tool.** The model has a single tool, `eval`: an Emacs Lisp cell
-  that runs in your live Emacs.
-- **Emacs is the persistent kernel.** What a cell defines stays defined.
-  A long result is cut and stored; `(ema-value N)` returns the live
-  object, so the agent slices it and does not fetch it again.
-- **No trace layer.** The agent checks each result live.
-- **Docstrings are the documentation.** The prompt lists every tool with
-  its first docstring line; `(ema-doc 'sym)` returns the rest.
-- **The agent extends itself.** `ema-tool-save` stores a documented
-  function in `~/.emacs.d/ema/tools/`; `ema-skill-save` stores a prose
-  note in `~/.emacs.d/ema/skills/`. Both are listed in later
-  conversations.
-- **It works in front of you.** It reads your windows (`ema-view`),
-  shows code (`ema-show`), edits with a highlight (`ema-edit`), puts long
-  output in temporary buffers (`ema-present`) and asks in the minibuffer
-  (`ema-choose`, `ema-confirm`).
-- **Code intelligence** through eglot, xref, flymake and imenu
-  (`ema-xref`, `ema-lsp`, `ema-diagnostics`, `ema-outline`).
-- **Providers switch on the fly**, also in the middle of a conversation
-  (`M-x ema-switch-provider`). A switch is never blind: the candidate
-  configuration makes one real call through a separate adapter instance,
-  and ema switches only when a tool call comes back.
-- **It knows itself.** The prompt names its source files, its state
-  directory and its limits. Ask it to change its model: it reads the
-  provider's model list, offers options in the minibuffer
-  (`ema-provider-propose`), tests your pick, then switches.
-- **Review, not authorship.** `ema-note` puts review notes under lines;
-  `ema-suggest` shows a diff that you accept or decline.
-- **Emacs first, the shell last.** `ema-search` searches the project
-  through xref, `ema-buffer-text` reads buffers and files, `ema-run`
-  starts builds and checks in a compilation buffer without a freeze, and
-  `ema-git` goes through magit when you have it (plain git otherwise).
-  `ema-shell` remains for quick commands and stops after
-  `ema-shell-timeout` seconds.
-- **Shipped skills**, read on demand: `intro` (the map of what ema can
-  do; ask "what can you do?"), `self` (how ema changes its own source)
-  and `organizer` (plans, todos and the org agenda).
-- **It changes itself behind a gate.** ema runs from a git checkout.
-  `ema-self-check` compiles the source and runs the tests in a separate
-  Emacs; `ema-self-reload` loads the files only after a pass. New
-  abilities go to the state directory first (tools, actions, skills);
-  the source is for core behaviour.
-- **Organizer.** Each project keeps its plans in a `todo.org`
-  (`ema-todo-add`, `ema-todo-state`, `ema-todos`). `ema-agenda-add`
-  asks you, then puts the file on your global `org-agenda-files`; ema
-  remembers it in its state directory and does not touch your init
-  files.
-- **Packages.** `ema-packages` and `ema-package-search` discover what
-  exists; `ema-install` asks you first.
+## A turn
 
-## Setup
+1. You stand on a function and press `C-c e r`.
+2. ema gets the function with its line numbers, the file and the
+   diagnostics there.
+3. It reads what it needs: usages through the language server, a
+   search of the project, the tests.
+4. Notes appear under the lines that have a finding. The chat gets a
+   short summary, with `file:line` links.
+5. You ask for a fix. A diff opens beside the chat; you press `y` or
+   `n`.
+
+While this runs, the mode line shows what ema does, and `C-c C-k`
+stops it.
+
+## Core capabilities
+
+| Area | What ema does | Tools |
+|---|---|---|
+| **See** | Reads your windows, buffers, point and region. What "this" means follows the buffer: lines of code, a magit hunk, marked files in dired, a compiler message, an org subtree | `ema-view`, `ema-buffer-text`, `ema-context-functions` |
+| **Understand** | Definitions, references, diagnostics and outlines through eglot, xref, flymake and imenu; text search that honours the project's ignore rules | `ema-xref`, `ema-diagnostics`, `ema-outline`, `ema-lsp`, `ema-search` |
+| **Point** | Shows a place beside the chat, writes `path:line` links in replies, puts long output in a buffer | `ema-show`, `ema-present` |
+| **Review** | One note under each line with a finding; where flymake is on, the note is also a diagnostic | `ema-note` |
+| **Change** | Proposes a diff that you accept or decline; edits directly only what you dictate. All edits of a turn are one undo step | `ema-suggest`, `ema-edit` |
+| **Ask** | Options and yes/no questions in the minibuffer | `ema-choose`, `ema-confirm` |
+| **Run** | Builds, tests and linters in a compilation buffer, without a freeze; git through magit when you have it | `ema-run`, `ema-git`, `ema-shell` |
+| **Plan** | Plans and todos in a `todo.org` for each project; offers the file to your global org agenda | `ema-todo-add`, `ema-todos`, `ema-agenda-add` |
+| **Remember** | Every conversation, model call and cell goes to SQLite. Short facts are kept as memories, for a project or global | `ema-history`, `ema-history-sql`, `ema-memory-save` |
+| **Grow** | Stores new tools, shortcuts and know-how; changes its own source behind a test gate | `ema-tool-save`, `ema-action-save`, `ema-skill-save`, `ema-self-check` |
+| **Switch models** | Lists, tests and switches providers and models in the middle of a conversation | `ema-switch-provider`, `ema-provider-propose` |
+
+Ask ema "what can you do?": it reads its own `intro` skill and answers
+for the buffer you are in.
+
+## How it works
+
+- **One tool.** The model calls `eval` with Emacs Lisp. Everything
+  else is an ordinary documented function.
+- **Emacs is the persistent kernel.** What a cell defines stays
+  defined. A long result is cut and stored; `(ema-value N)` returns the
+  live object, so ema slices it and does not fetch it again.
+- **Docstrings are the documentation.** The prompt lists every tool
+  with the first line of its docstring; `(ema-doc 'NAME)` returns the
+  rest. A new tool needs only a docstring to be known.
+- **Skills are read on demand.** The prompt lists each skill with one
+  line. Shipped: `intro` (the map of capabilities), `organizer` (plans,
+  todos, the agenda), `history` (queries over earlier runs), `secrets`
+  (the setup of your keys), `self` (how ema changes itself).
+- **Emacs first, the shell last.** ema searches, reads files, runs
+  checks and calls git through Emacs. `ema-shell` remains for quick
+  commands and stops after `ema-shell-timeout` seconds, because a
+  synchronous command freezes Emacs.
+
+## Install
+
+ema needs Emacs 29 or later (built-in SQLite). It is developed on
+Emacs 31. magit, embark, eglot, flymake and org are optional: ema uses
+each one when you have it.
+
+ema runs from source, so that it can read and change itself. Clone it
+and load it:
 
 ```elisp
 (add-to-list 'load-path "~/code/ema")
 (require 'ema)
-(setq ema-secrets-file "~/.config/ema/secrets.env")
-```
-
-The secrets file holds `NAME=VALUE` lines; the names are the `:key` of
-each provider in `ema-providers`:
-
-```
-llm.key.anthropic=...
-llm.key.openrouter=...
-llm.key.openai=...
-```
-
-Every secret goes through `ema-secret-function`. Set it to another
-function of one argument (the name) to move to auth-source, pass or a
-keyring.
-
-## Use
-
-| Command | Key in the chat | What it does |
-|---|---|---|
-| `M-x ema` | | Open the chat in a side window |
-| `M-x ema-ask` | | Ask from the minibuffer, from any buffer |
-| `ema-send` | `RET`, `C-c C-c` | Send (`C-j` inserts a newline) |
-| `ema-abort` | `C-c C-k` | Stop the running turn |
-| `ema-continue` | `C-c C-r` | Call the model again after an error |
-| `ema-switch-provider` | `C-c C-p` | Change provider or model |
-| `ema-new` | `C-c C-n` | New conversation with a clean context; re-reads tools and skills |
-| `ema-resume` | `C-c C-o` | Continue an earlier conversation of this project |
-| `ema-forget` | | Delete a conversation from the history |
-
-`C-g` stops a cell that runs too long.
-
-## Keys in your code buffers
-
-Bind the prefix map once:
-
-```elisp
 (keymap-global-set "C-c e" ema-command-map)
 ```
+
+### Keys for the model providers
+
+ema reads its keys through auth-source, from the GPG-encrypted file in
+your `auth-sources` (usually `~/.authinfo.gpg`). The entry of a key has
+the key's name as the machine:
+
+```
+machine llm.key.anthropic login ema password sk-ant-...
+```
+
+The names are the `:key` of each provider in `ema-providers`:
+`llm.key.anthropic`, `llm.key.openrouter`, `llm.key.openai`.
+
+`M-x ema-secret-set` adds a key: you pick the name and type the value
+into the minibuffer. The value is not shown and goes straight to the
+encrypted file. ema refuses to save into a file that is not encrypted.
+
+No GPG setup yet? Ask ema "help me set up my keys": its `secrets` skill
+checks what you have and leads you through it. ema never reads the file
+and never sees a value; it asks you to type it (`ema-secret-ask`).
+
+An environment variable also works, for scripts: `LLM_KEY_ANTHROPIC`.
+Every secret goes through `ema-secret-function`; set it to another
+function of one argument (the name) to read from pass or a keyring.
+
+## Keys
+
+### In your buffers
 
 An active region is always what is sent. With no region, each command
 uses its own scope.
 
-| Key | Command | Sends |
+| Key | Command | What it does |
 |---|---|---|
-| `C-c e a` | `ema-ask-here` | The line at point, with your question from the minibuffer |
-| `C-c e c` | `ema-add-here` | Nothing yet: adds a reference to the chat input and moves there |
-| `C-c e e` | `ema-act-explain` | The definition at point |
-| `C-c e r` | `ema-act-review` | The definition; findings come back as notes on lines |
-| `C-c e f` | `ema-act-refactor` | The definition; changes come back as diffs you accept |
-| `C-c e x` | `ema-act-fix` | The line and its diagnostics |
-| `C-c e d` | `ema-act-doc` | The definition |
-| `C-c e u` | `ema-act-usages` | The symbol at point |
-| `C-c e .` | `ema-act` | Pick an action from a list |
-| `C-c e q` | `ema-clear-notes` | Removes the review notes |
-| `C-c e ]` / `[` | `ema-next-note`, `ema-previous-note` | Moves between the review notes |
-| `C-c e m` | `ema-menu` | A transient menu of all of the above, with your saved actions |
-| `C-c e o` / `n` / `k` / `p` | | Open chat / new / stop / switch provider |
+| `C-c e a` | `ema-ask-here` | Asks your question about the line at point |
+| `C-c e c` | `ema-add-here` | Adds a reference to the chat input; repeat it to collect places |
+| `C-c e e` | `ema-act-explain` | Explains the definition at point |
+| `C-c e r` | `ema-act-review` | Reviews it; findings come back as notes on lines |
+| `C-c e f` | `ema-act-refactor` | Proposes a refactoring as diffs |
+| `C-c e x` | `ema-act-fix` | Fixes the line, with its diagnostics |
+| `C-c e d` | `ema-act-doc` | Writes the missing documentation |
+| `C-c e u` | `ema-act-usages` | Finds the usages of the symbol at point |
+| `C-c e .` | `ema-act` | Picks an action from a list |
+| `C-c e m` | `ema-menu` | A transient menu of all of this, with your own actions |
+| `C-c e ]` `[` `q` | | Next note, previous note, clear the notes |
+| `C-c e o` `n` `h` `k` `p` | | Open the chat, new conversation, resume, stop, switch model |
 
-What "the code at point" is depends on the buffer
-(`ema-context-functions`): lines in a code buffer, the section at point
-in magit, the marked files in dired, the message at point with its
-source in a compilation or grep buffer, the subtree in org.
+With embark: `embark-act`, then `z` asks ema about the region, symbol,
+definition or file, and `Z` picks an action. `M-,` returns to where you
+were before ema showed you a place.
 
-More ways in and out:
+### In the chat
 
-- **Embark:** `embark-act`, then `z` asks ema about the region, symbol,
-  definition or file; `Z` picks an action.
-- **Links:** a file path in a reply (`src/parse.el:120`) is a link to
-  that place. The chat's directory is the project root, so `M-n` in
-  `C-x C-f` and `embark-act` also find the path at point.
-- **Flymake:** where flymake is on, each review note is also a
-  diagnostic.
-- **Undo:** all edits of one turn in a buffer are one undo step.
-  `M-,` returns to where you were before ema showed you a place.
+| Key | Command | What it does |
+|---|---|---|
+| `RET`, `C-c C-c` | `ema-send` | Sends (`C-j` inserts a newline) |
+| `M-p`, `M-n` | | Earlier and later inputs |
+| `C-c C-k` | `ema-abort` | Stops the running turn; `C-g` stops one cell |
+| `C-c C-r` | `ema-continue` | Calls the model again after an error |
+| `C-c C-n` | `ema-new` | New conversation with a clean context |
+| `C-c C-o` | `ema-resume` | Continues an earlier conversation of this project |
+| `C-c C-l` | `ema-cells` | The log of all cells with their results |
+| `C-c C-p` | `ema-switch-provider` | Changes the provider or the model, after a test call |
 
-An action is a pre-prompt plus a scope, stored as data. Ask ema for a
-new one ("make me a shortcut that checks error handling"): it calls
-`ema-action-save`, which defines `ema-act-NAME`, binds the key and saves
-it in `~/.emacs.d/ema/actions.eld`.
+A file path in a reply is a link. The chat's directory is the project
+root, so `M-n` in `C-x C-f` and `embark-act` also find a path at point.
 
-## While a turn runs
+### While a turn runs
 
-- A spinner and the current activity show in the chat header and in the
-  mode line of every window (`ema ⠹ waiting for the model, call 2`).
-- The end of the chat shows the last cells of the turn, one line each
-  (`✓ #7 (first line…)`), and a link to the live log.
-- `*ema-cells*` (`C-c C-l`) is a read-only buffer with every cell and
-  its full result, updated live. When the turn ends, the queue becomes
-  one line (`▸ 7 cells, #1–#7`) that links into the log.
+- The chat header and the mode line show a spinner and the activity:
+  `ema[myproject] ⠹ waiting for the model, call 2`.
+- The end of the chat shows the last cells of the turn, one line each,
+  as links into the log.
+- After the turn, the cells become one line (`▸ 7 cells, #1–#7`). The
+  chat keeps your messages and the replies.
 
-## Projects and history
+## Projects, history and memory
 
 - **One chat for each project.** `M-x ema` and the `C-c e` keys go to
-  the chat of the current buffer's project: `*ema: NAME*`. Buffers
+  the chat of the current buffer's project, `*ema: NAME*`. Buffers
   outside a project share `*ema*`. All chats share one Emacs, so tools,
   skills and variables are common.
-- **Everything is recorded** in `~/.emacs.d/ema/history.sqlite`
-  (SQLite is built into Emacs): conversations with their project,
-  messages, model calls with tokens and duration, cells with code and
-  result. Set `ema-history-enabled` to nil to turn it off. The database
-  holds what the model saw, file contents included; it stays on your
-  machine.
+- **History.** `~/.emacs.d/ema/history.sqlite` records each
+  conversation with its project, the messages, every model call with
+  tokens and duration, and every cell with code and result. ema
+  searches it (`ema-history`) and queries it with read-only SQL
+  (`ema-history-sql`). Ask "which tools did you use most last week?" or
+  "what did we decide about the parser?".
 - **The window.** ema sends the whole conversation until the input
-  passes `ema-context-high` tokens (120k). Then the oldest turns leave
-  the window, down to about `ema-context-low` (60k), and a note with
-  your earlier requests takes their place. A trim costs one cache miss;
-  between trims the prompt cache holds. Nothing is deleted.
-- **Memory.** The same database has a `memories` table: short facts
-  with a title of at most 200 characters, for one project or global.
-  The prompt lists the newest titles (`ema-memory-window`: 15 global, 25
-  of the project) and says how many more exist. ema saves, reads and
-  searches them with `ema-memory-save`, `ema-memory`,
-  `ema-memory-search` and `ema-memory-delete`.
-- **ema reads its history** with `ema-history` (full-text search) and
-  `ema-history-sql` (read-only SQL); the `history` skill has queries
-  for the analysis of runs.
+  passes `ema-context-high` tokens. Then the oldest turns leave the
+  window, down to about `ema-context-low`, and a note with your earlier
+  requests takes their place. Between trims the prompt cache holds.
+  Nothing is deleted; `M-x ema-forget` deletes a conversation.
+- **Memory.** Short facts live in the same database, for one project
+  or global: a decision you stated, a preference, a fact that took work
+  to find. The prompt lists the newest titles and counts the rest. ema
+  saves one and tells you in one line.
+
+The database holds what the model saw, file contents included. It
+stays on your machine. Set `ema-history-enabled` to nil to turn it off.
+
+## Make it yours
+
+ema extends itself, and each extension is plain data or plain Lisp in
+`~/.emacs.d/ema/`.
+
+| You want | Ask ema, or use | It is stored as |
+|---|---|---|
+| A new capability | `ema-tool-save` | A documented function in `tools/` |
+| A shortcut for a request you repeat | "make me a shortcut that checks error handling" | An action: a pre-prompt, a scope and a key in `actions.eld` |
+| "This" to mean something in another mode | A function in `ema-context-functions` | A stored tool |
+| A procedure to follow next time | `ema-skill-save` | A Markdown note in `skills/` |
+| A fact to remember | `ema-memory-save` | A row in the database |
+| Another model or endpoint | `M-x ema-switch-provider`, `ema-provider-add` | `config.eld` |
+| A change to ema's core | "change yourself so that …" | A commit in the source checkout |
+
+For a change to its own source, ema proposes each edit as a diff, then
+compiles and runs the tests in a separate Emacs (`ema-self-check`).
+`ema-self-reload` loads the new code only after a pass.
+
+## Settings
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `ema-provider` | `anthropic` | The provider in use; change it with `ema-switch-provider` |
+| `ema-secret-store-file` | nil: the first `.gpg` file in `auth-sources` | Where `ema-secret-set` saves a key |
+| `ema-max-turns` | 40 | Model calls for one message before ema stops and asks |
+| `ema-context-high`, `ema-context-low` | 120000, 60000 | The window, in input tokens |
+| `ema-memory-window` | `(15 . 25)` | Memory titles in the prompt: global and project |
+| `ema-shell-timeout` | 10 | Seconds before `ema-shell` stops a command |
+| `ema-digest-limit` | 4000 | Characters of a cell result that the model sees |
+| `ema-display-action` | a side window | Where the chat opens |
+| `ema-history-enabled` | `t` | Record conversations |
 
 ## Files
 
 | File | Holds |
 |---|---|
-| `ema.el` | The cell evaluator, the chat buffer, the loop |
+| `ema.el` | The cell evaluator, the chats, the loop, the window, resume |
 | `ema-llm.el` | Providers (Anthropic and OpenAI-compatible wire formats), secrets, HTTP |
 | `ema-tools.el` | `ema-deftool` and the built-in tools |
-| `ema-history.el` | The SQLite history: conversations, messages, calls, cells |
-| `ema-self.el` | Provider test, switch and proposal; the saved configuration |
+| `ema-history.el` | The SQLite history and the memories |
+| `ema-self.el` | Provider test and switch, the self check, the saved configuration |
 | `ema-org.el` | Todos in org files, the agenda |
 | `ema-actions.el` | Context at point, the prefix keymap, the menu, actions |
-| `skills/intro.md`, `self.md`, `organizer.md` | Skills that ema reads on demand |
 | `skills/core.md` | The system prompt |
-| `ema-tests.el` | `make test` |
+| `skills/*.md` | Skills that ema reads on demand |
+| `ema-tests.el` | The tests: `make test`; `make compile` checks for warnings |
 
 ## Safety
 
-The agent evaluates arbitrary Emacs Lisp in your session with your
+ema evaluates arbitrary Emacs Lisp in your session with your
 permissions. There is no sandbox. The prompt tells it to confirm before
-an action that is hard to undo; nothing enforces that.
+an action that is hard to undo, and installs, agenda changes and
+suggestions ask you in the minibuffer; nothing else enforces that. Use
+it where you would let a colleague type at your keyboard.
+
+## Not built yet
+
+- Token prices and speed in the status bar (see `todo.org`).

@@ -55,7 +55,11 @@ References in ~/any/anybao:
 - [[file:~/any/anybao/docs/adr/006-data-contracts.md][ADR-006]] §1/§2 — turn payload, token estimate (2.5 chars/token)
 - [[file:~/any/anybao/docs/adr/017-agent-userspace-datasets.md][ADR-017]] — where turns and chunks live
 
-* TODO Read secrets from auth-source (Emacs secrets)
+* DONE Read secrets from auth-source (Emacs secrets)
+Done: =ema-secret-from-auth-source= is the default, secrets.env is
+gone, the env-var fallback stays.  =M-x ema-secret-set= and the tool
+=ema-secret-ask= add a key; skills/secrets.md has the setup.
+
 Switch =ema-secret-function= from =ema-secret-from-file= (secrets.env)
 to auth-source, so keys live in the user's =auth-sources=
 (=~/.emacs.d/secrets/.authinfo.gpg=, GPG-encrypted).

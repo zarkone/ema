@@ -258,15 +258,44 @@ The directory is not a project, so the chat is \"*ema*\"."
                                  (plist-get (aref (plist-get (car ema--messages) :content) 0)
                                             :text))))))))
 
-(ert-deftest ema-secret-from-file-and-env ()
-  (let ((ema-secrets-file (make-temp-file "ema-secrets" nil nil
-                                          "other=1\nllm.key.test = \"abc\"\n"))
-        (process-environment (cons "LLM_KEY_ENVONLY=xyz" process-environment)))
+(ert-deftest ema-secrets-in-auth-source ()
+  (let* ((file (make-temp-file "ema-authinfo"))
+         (auth-sources (list file))
+         (ema-secret-store-file file)
+         (auth-source-save-behavior t)
+         (ema-providers '((p1 :key "llm.key.test") (p2 :key "llm.key.other")
+                          (local :key nil)))
+         (process-environment (cons "LLM_KEY_ENVONLY=xyz" process-environment)))
     (unwind-protect
-        (progn (should (equal (ema-secret "llm.key.test") "abc"))
-               (should (equal (ema-secret "llm.key.envonly") "xyz"))
-               (should-error (ema-secret "llm.key.missing")))
-      (delete-file ema-secrets-file))))
+        (progn
+          (auth-source-forget-all-cached)
+          (should-error (ema-secret "llm.key.test"))
+          (should (equal (ema-secret "llm.key.envonly") "xyz"))
+          (should (equal (ema-secret-names) '("llm.key.test" "llm.key.other")))
+          ;; the agent's tool: the user types, the value does not come back
+          (cl-letf (((symbol-function 'read-passwd) (lambda (&rest _) (copy-sequence "abc-123"))))
+            (let ((result (ema-secret-ask "llm.key.test")))
+              (should (string-match-p "\\`saved in " result))
+              (should-not (string-match-p "abc-123" result)))
+            (should-error (ema-secret-ask "llm.key.unknown")))
+          (cl-letf (((symbol-function 'read-passwd) (lambda (&rest _) (signal 'quit nil))))
+            (should (equal (ema-secret-ask "llm.key.other") "cancelled")))
+          (should (equal (ema-secret "llm.key.test") "abc-123"))
+          (should (string-match-p "machine llm\\.key\\.test login ema password abc-123"
+                                  (with-temp-buffer (insert-file-contents file)
+                                                    (buffer-string))))
+          (let ((status (ema-secrets-status)))
+            (should (string-match-p "llm\\.key\\.test: present" status))
+            (should (string-match-p "llm\\.key\\.other: missing" status))
+            (should-not (string-match-p "abc-123" status)))
+          ;; no encrypted file configured: refuse, do not write plain text
+          (let ((ema-secret-store-file nil) (auth-sources '("~/.authinfo")))
+            (should-error (ema-secret-store "llm.key.other" "v")))
+          (let ((ema-secret-store-file nil)
+                (auth-sources '((:source "~/x/.authinfo.gpg"))))
+            (should (equal (ema--secret-store-file) "~/x/.authinfo.gpg"))))
+      (auth-source-forget-all-cached)
+      (delete-file file))))
 
 (ert-deftest ema-buffer-text-reads-buffers-and-files ()
   (let ((file (make-temp-file "ema-text" nil ".txt" "a\nb\nc\n")))
@@ -277,7 +306,16 @@ The directory is not a project, so the chat is \"*ema*\"."
           (with-temp-buffer
             (insert "x\ny")
             (should (equal (ema-buffer-text (buffer-name)) "1\tx\n2\ty")))
-          (should-error (ema-buffer-text "/no/such/file")))
+          (should-error (ema-buffer-text "/no/such/file"))
+          ;; secret files are refused, as a file and as an open buffer
+          (should-error (ema-buffer-text "~/.authinfo.gpg"))
+          (let ((auth-sources (list file)))
+            (should-error (ema-buffer-text file))
+            (with-current-buffer (find-file-noselect file)
+              (unwind-protect
+                  (progn (should-error (ema-buffer-text (buffer-name)))
+                         (should-error (ema-context)))
+                (kill-buffer)))))
       (delete-file file))))
 
 (ert-deftest ema-search-finds-lines ()

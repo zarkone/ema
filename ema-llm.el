@@ -7,7 +7,7 @@
 ;; each provider API converts it on the way out and back.  That is what
 ;; makes a provider switch possible in the middle of a conversation.
 ;;
-;; Secrets go through `ema-secret' only, so the source can change later.
+;; Secrets go through `ema-secret' only; the default source is auth-source.
 
 ;;; Code:
 
@@ -21,29 +21,72 @@
 
 ;;;; Secrets
 
-(defvar ema-secrets-file "~/.config/ema/secrets.env"
-  "File of NAME=VALUE lines read by `ema-secret-from-file'.")
+(require 'auth-source)
 
-(defvar ema-secret-function #'ema-secret-from-file
+(defvar ema-secret-function #'ema-secret-from-auth-source
   "Function of one argument NAME that returns the secret or nil.
-Replace it to move to another store (auth-source, pass, a keyring).")
+Replace it to read from another store (pass, a keyring).")
 
-(defun ema-secret-from-file (name)
-  "Return secret NAME from `ema-secrets-file', else from the environment.
+(defcustom ema-secret-store-file nil
+  "The file where `ema-secret-set' saves a secret.
+nil means the first GPG-encrypted file in `auth-sources'.  A file that
+does not end in .gpg holds the secret as plain text."
+  :type '(choice (const nil) file) :group 'ema)
+
+(defun ema-secret-from-auth-source (name)
+  "Return secret NAME from `auth-sources', else from the environment.
+The entry is the one whose host (\"machine\") is NAME:
+  machine llm.key.anthropic login ema password VALUE
 The environment name is NAME upcased with dots as underscores."
-  (or (let ((file (expand-file-name ema-secrets-file)))
-        (when (file-readable-p file)
-          (with-temp-buffer
-            (insert-file-contents file)
-            (when (re-search-forward
-                   (concat "^" (regexp-quote name) "[ \t]*=[ \t]*\\(.*\\)$") nil t)
-              (string-trim (match-string 1) "[ \t\"']+" "[ \t\"']+")))))
+  (or (auth-source-pick-first-password :host name)
       (getenv (upcase (string-replace "." "_" name)))))
 
 (defun ema-secret (name)
   "Return secret NAME, or signal an error that names it."
   (or (funcall ema-secret-function name)
-      (error "ema: no secret %s (see `ema-secret-function')" name)))
+      (error "ema: no secret %s. Add it with M-x ema-secret-set" name)))
+
+(defun ema--secret-store-file ()
+  "Return the file that receives a new secret, or signal an error."
+  (or ema-secret-store-file
+      (seq-find (lambda (f) (and (stringp f) (string-suffix-p ".gpg" f)))
+                (mapcar (lambda (s) (if (stringp s) s (plist-get s :source)))
+                        auth-sources))
+      (error "No .gpg file in `auth-sources': add \"~/.authinfo.gpg\" to it first")))
+
+(defun ema-secret-store (name value)
+  "Save VALUE as secret NAME in the auth-source file; return the file.
+An older entry for NAME in that file is replaced by hand: this adds an
+entry and does not remove one."
+  (let* ((file (ema--secret-store-file))
+         (auth-sources (list file))
+         (found (car (auth-source-search :host name :user "ema" :secret value
+                                         :max 1 :create t)))
+         (save (plist-get found :save-function)))
+    (when (functionp save) (funcall save))
+    (auth-source-forget-all-cached)
+    file))
+
+(defvar ema-providers)
+
+(defun ema-secret-names ()
+  "Return the secret names that the providers use."
+  (delete-dups (delq nil (mapcar (lambda (cell) (plist-get (cdr cell) :key))
+                                 ema-providers))))
+
+(defun ema-secret-set (name)
+  "Read the value of secret NAME in the minibuffer and save it.
+The value is not echoed and not kept in a buffer.  It goes to the
+GPG-encrypted file in `auth-sources' (see `ema-secret-store-file')."
+  (interactive
+   (list (completing-read "Secret name: " (ema-secret-names) nil nil nil nil
+                          (car (ema-secret-names)))))
+  (let ((value (read-passwd (format "Value of %s (not shown): " name))))
+    (when (string-empty-p value) (user-error "Empty value; nothing saved"))
+    (unwind-protect
+        (message "ema: %s saved in %s" name
+                 (abbreviate-file-name (ema-secret-store name value)))
+      (clear-string value))))
 
 ;;;; Providers
 

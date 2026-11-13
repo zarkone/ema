@@ -230,6 +230,22 @@ With REGEXP, only buffers whose name or file matches.  Internal buffers
                (buffer-list))
    "\n"))
 
+(defvar auth-sources)
+
+(defun ema--secret-file-p (file)
+  "Non-nil when FILE holds secrets: an auth-source file or a GPG file."
+  (and (stringp file)
+       (let ((file (expand-file-name file)))
+         (or (string-match-p "\\.gpg\\'\\|/\\.authinfo\\'\\|/\\.netrc\\'" file)
+             (seq-some (lambda (s)
+                         (let ((f (if (stringp s) s (plist-get s :source))))
+                           (and (stringp f) (equal (expand-file-name f) file))))
+                       (bound-and-true-p auth-sources))))))
+
+(defun ema--refuse-secret-file (file)
+  (when (ema--secret-file-p file)
+    (error "%s holds secrets; ema does not read it" (abbreviate-file-name file))))
+
 (defun ema--numbered-lines (from-line to-line)
   "Return lines FROM-LINE..TO-LINE of the current buffer with line numbers."
   (save-excursion
@@ -255,6 +271,7 @@ part; the default is the whole text.  Use this, not sed or cat."
   (let ((buf (or (get-buffer buffer-or-file)
                  (and (stringp buffer-or-file)
                       (find-buffer-visiting (expand-file-name buffer-or-file))))))
+    (ema--refuse-secret-file (if buf (buffer-file-name buf) buffer-or-file))
     (cond
      (buf (with-current-buffer buf (ema--numbered-lines from-line to-line)))
      ((and (stringp buffer-or-file) (file-regular-p buffer-or-file))

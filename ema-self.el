@@ -287,13 +287,67 @@ To change the model or its configuration, never set `ema-provider' or
    a switch; `ema-provider-add' defines a new endpoint.
 
 A switch takes effect at your next model call, so report the result in
-the same turn. Secrets are names (`llm.key.x'): never read, print or ask
-for a key's value; a missing key is the user's to add to the secrets
-file.
+the same turn. Secrets are names (`llm.key.x'), kept in the user's
+auth-source file: never read, print or ask for a key's value, and never
+open or decrypt that file. When a key is missing, `(ema-secret-ask
+\"NAME\")` lets the user type it into the minibuffer; you do not see it.
+`(ema-skill \"secrets\")` has the setup for a user without one.
 "
           (abbreviate-file-name ema-source-directory)
           (replace-regexp-in-string "^" "  " (ema-self-files))
           (abbreviate-file-name ema-directory)))
+
+;;;; Secrets: status and entry, never values
+
+(ema-deftool ema-secrets-status ()
+  "Return the state of the secret store, without any secret value.
+Lines: the files in `auth-sources' and whether each exists, whether gpg
+is installed and has a secret key, and for each provider key whether it
+is present.  The check of a key can make Emacs ask the user for their
+GPG passphrase."
+  (let ((files (mapcar (lambda (s) (if (stringp s) s (plist-get s :source)))
+                       auth-sources)))
+    (concat
+     (mapconcat (lambda (f)
+                  (format "auth-source %s: %s" f
+                          (cond ((not (stringp f)) "not a file")
+                                ((file-exists-p f) "exists")
+                                (t "does not exist yet"))))
+                files "\n")
+     (format "\ngpg: %s"
+             (if (executable-find "gpg")
+                 (format "installed, %d secret key(s)"
+                         (with-temp-buffer
+                           (ignore-errors
+                             (process-file "gpg" nil t nil "--list-secret-keys" "--with-colons"))
+                           (how-many "^sec:" (point-min) (point-max))))
+               "not installed"))
+     (format "\nnew secrets go to: %s"
+             (condition-case err (ema--secret-store-file)
+               (error (error-message-string err))))
+     "\n"
+     (mapconcat (lambda (name)
+                  (format "%s: %s" name
+                          (if (ignore-errors (funcall ema-secret-function name))
+                              "present" "missing")))
+                (ema-secret-names) "\n"))))
+
+(ema-deftool ema-secret-ask (name)
+  "Ask the user to type secret NAME into the minibuffer, then save it.
+The value is hidden and you never see it.  NAME is a provider's key
+name such as \"llm.key.anthropic\".  Returns \"saved in FILE\" or
+\"cancelled\".  Tell the user in the chat first what you will ask for
+and where they get the key."
+  (unless (member name (ema-secret-names))
+    (error "No provider uses %s; the names are %s" name (ema-secret-names)))
+  (condition-case nil
+      (let ((value (read-passwd (format "ema asks for %s (not shown, C-g cancels): " name))))
+        (if (string-empty-p value)
+            "cancelled"
+          (unwind-protect
+              (format "saved in %s" (abbreviate-file-name (ema-secret-store name value)))
+            (clear-string value))))
+    (quit "cancelled")))
 
 ;;;; Restart
 
