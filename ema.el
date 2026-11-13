@@ -30,6 +30,7 @@
 (require 'ema-llm)
 (require 'ema-tools)
 (require 'ema-self)
+(require 'ema-org)
 
 (defgroup ema nil "A minimal agent that lives in Emacs." :group 'tools)
 

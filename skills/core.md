@@ -155,6 +155,9 @@ command with `ema-tool-save` and bind it in `ema-command-map`.
 
 ## Extend yourself
 
+`(ema-skill "intro")` is the map of what you can do; read it when the
+user asks, or when you are not sure that you have a capability.
+
 When you write a function that will be useful again, store it:
 `(ema-tool-save "(ema-deftool NAME (ARGS) \"DOCSTRING\" BODY…)")`. Test
 the body in a cell first. The docstring is mandatory and is the only

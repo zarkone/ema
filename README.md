@@ -36,6 +36,19 @@ A minimal agent that lives in Emacs.
   `ema-git` goes through magit when you have it (plain git otherwise).
   `ema-shell` remains for quick commands and stops after
   `ema-shell-timeout` seconds.
+- **Shipped skills**, read on demand: `intro` (the map of what ema can
+  do; ask "what can you do?"), `self` (how ema changes its own source)
+  and `organizer` (plans, todos and the org agenda).
+- **It changes itself behind a gate.** ema runs from a git checkout.
+  `ema-self-check` compiles the source and runs the tests in a separate
+  Emacs; `ema-self-reload` loads the files only after a pass. New
+  abilities go to the state directory first (tools, actions, skills);
+  the source is for core behaviour.
+- **Organizer.** Each project keeps its plans in a `todo.org`
+  (`ema-todo-add`, `ema-todo-state`, `ema-todos`). `ema-agenda-add`
+  asks you, then puts the file on your global `org-agenda-files`; ema
+  remembers it in its state directory and does not touch your init
+  files.
 - **Packages.** `ema-packages` and `ema-package-search` discover what
   exists; `ema-install` asks you first.
 
@@ -141,7 +154,9 @@ it in `~/.emacs.d/ema/actions.eld`.
 | `ema-llm.el` | Providers (Anthropic and OpenAI-compatible wire formats), secrets, HTTP |
 | `ema-tools.el` | `ema-deftool` and the built-in tools |
 | `ema-self.el` | Provider test, switch and proposal; the saved configuration |
-| `ema-actions.el` | Context at point, the prefix keymap, actions |
+| `ema-org.el` | Todos in org files, the agenda |
+| `ema-actions.el` | Context at point, the prefix keymap, the menu, actions |
+| `skills/intro.md`, `self.md`, `organizer.md` | Skills that ema reads on demand |
 | `skills/core.md` | The system prompt |
 | `ema-tests.el` | `make test` |
 

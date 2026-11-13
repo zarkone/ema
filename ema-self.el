@@ -261,10 +261,11 @@ result of `ema-provider-switch', or \"declined\"."
 
 You are an Emacs package and you can inspect and change yourself.
 
-- Source: %s — ema.el (the eval cell, the chat buffer, the loop),
-  ema-llm.el (provider adapters, secrets, HTTP), ema-tools.el (tools),
-  ema-self.el (these self tools), skills/core.md (this prompt). Read
-  them with `ema-buffer-text' or `ema-outline' when asked how you work.
+- Source: %s, a git checkout:
+%s
+  Read them with `ema-outline' and `ema-buffer-text' when asked how you
+  work.  Before you change them, read `(ema-skill \"self\")`: it says
+  where a change belongs and how the test gate works.
 - State: %s — tools/ (stored tools), skills/ (stored skills),
   config.eld (provider configurations).
 - The provider and model in use: `(ema-providers-list)`, the line with *.
@@ -291,12 +292,75 @@ for a key's value; a missing key is the user's to add to the secrets
 file.
 "
           (abbreviate-file-name ema-source-directory)
+          (replace-regexp-in-string "^" "  " (ema-self-files))
           (abbreviate-file-name ema-directory)))
 
 ;;;; Restart
 
-(defconst ema--source-files '("ema-llm" "ema-tools" "ema-self" "ema" "ema-actions")
+(defconst ema--source-files
+  '("ema-llm" "ema-tools" "ema-self" "ema-org" "ema" "ema-actions")
   "Source files of ema in dependency order, leaves first.")
+
+(ema-deftool ema-self-files ()
+  "Return ema's own source files, one per line: \"name — what it holds\".
+The files are in `ema-source-directory'.  The list is read from the
+files themselves, so it is current."
+  (mapconcat
+   (lambda (file)
+     (format "%s — %s" (file-name-nondirectory file)
+             (with-temp-buffer
+               (insert-file-contents file nil 0 300)
+               (let ((line (car (split-string (buffer-string) "\n"))))
+                 (string-trim
+                  (replace-regexp-in-string
+                   "-\\*-.*-\\*-" ""
+                   (replace-regexp-in-string "\\`[;# ]*\\(?:[^ ]+ --- \\)?" "" line)))))))
+   (append (mapcar (lambda (n) (expand-file-name (concat n ".el") ema-source-directory))
+                   ema--source-files)
+           (seq-filter #'file-exists-p
+                       (list (expand-file-name "ema-tests.el" ema-source-directory)))
+           (directory-files (expand-file-name "skills" ema-source-directory) t "\\.md\\'"))
+   "\n"))
+
+(defvar ema--self-check-time nil
+  "When the last `ema-self-check' started.")
+
+(defun ema--self-paths ()
+  (mapcar (lambda (n) (expand-file-name (concat n ".el") ema-source-directory))
+          ema--source-files))
+
+(ema-deftool ema-self-check ()
+  "Compile ema's source and run its tests in a separate Emacs process.
+This is the gate before `ema-self-reload': a broken file fails here and
+not in the session you run in.  It returns at once; read the outcome
+with `(ema-run-result \"self-check\" 30)`.  Save the source buffers
+first: the check reads the files."
+  (dolist (file (ema--self-paths))
+    (let ((buf (find-buffer-visiting file)))
+      (when (and buf (buffer-modified-p buf))
+        (error "%s has unsaved changes; save it first" (buffer-name buf)))))
+  (setq ema--self-check-time (current-time))
+  (ema-run "make compile && make test" ema-source-directory "self-check"))
+
+(ema-deftool ema-self-reload ()
+  "Load ema's source files into this session, after a passed `ema-self-check'.
+Refuses when no check ran, when it still runs or failed, or when a
+source file changed after the check started.  The new code is live from
+the next cell; values of variables (keymaps among them) are kept."
+  (let ((result (and ema--self-check-time
+                     (get-buffer (ema--run-buffer-name "self-check"))
+                     (ema-run-result "self-check"))))
+    (unless (equal (plist-get result :status) "finished")
+      (error "No passed check: run (ema-self-check) and read (ema-run-result \"self-check\" 30); status: %s"
+             (or (plist-get result :status) "none")))
+    (dolist (file (ema--self-paths))
+      (when (time-less-p ema--self-check-time
+                         (file-attribute-modification-time (file-attributes file)))
+        (error "%s changed after the check; run (ema-self-check) again"
+               (file-name-nondirectory file))))
+    (dolist (file (ema--self-paths))
+      (load file nil 'nomessage 'nosuffix))
+    (format "reloaded: %s" (mapconcat #'identity ema--source-files " "))))
 
 (defun ema-restart ()
   "Reload all of ema's source files, in dependency order.
