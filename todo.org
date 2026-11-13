@@ -4,15 +4,31 @@
 SCHEDULED: <2026-11-13 Fri>
 Four small steps, each as its own suggestion:
 
-3. Status bar: =ema-mode-line= shows only while busy now.  Make it
-   always show e.g. =ema ↑35k ⚡716k=, plus the
+** TODO Status bar: =ema-mode-line= shows only while busy now.
+Make it always show e.g. =ema ↑35k ⚡716k=, plus the
    spinner when busy; the chat header shows the same.
-4. OpenAI parser always reports =:cached 0=; read
+** DONE OpenAI parser always reports =:cached 0=; read
+CLOSED: [2026-11-13 Fri 02:32]
    =usage.prompt_tokens_details.cached_tokens=
 
-Also wanted: token speed — tokens/sec, e.g. out tokens
+** DONE token speed — tokens/sec, e.g. out tokens
+CLOSED: [2026-11-13 Fri 02:44]
 over the seconds of each model call, shown in the status bar or the
 header while streaming/completing.
+
+* TODO should we show numbers with ema-buffer text?
+i don't think so
+#+begin_src ema-cells
+── ema #15 · 02:34:30 ──
+(ema-buffer-text "~/code/ema/ema-tests.el" 215 250)
+=> 215	    (should (equal (mapcar (lambda (m) (plist-get m :role)) out)
+216	                   '("system" "user" "assistant" "tool")))
+217	    (should (equal (plist-get (aref out 3) :tool_call_id) "t1"))
+218	    (should (ema--json-encode (list :messages out))))
+219	  (let ((reply (ema--openai-parse
+220	                (ema--json-parse
+
+#+end_src
 
 * DONE save a running window of previous cells :claude:
 archive previous to tar.gz. default 1000 probably?
@@ -59,3 +75,10 @@ CLOSED: [2026-11-13 Fri 02:14]
 Now the chat opens on the side where =ema-display-action= puts it
 (right by default); the user reads the code on the right and the chat
 on the left is more comfortable.
+
+* TODO Per-project LLM config
+Allow each project to choose its own provider/model (e.g. via
+.dir-locals.el or a per-project entry in config.eld) instead of one
+global `ema-provider'.
+maybe we can store configs to sqlite, also global and per project
+but redefine/set it via dir locals, hinting it in ui somehow

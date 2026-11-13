@@ -184,6 +184,7 @@ as text: a cell never signals."
 (defvar-local ema--origin nil "The buffer the user worked in when they sent.")
 (defvar-local ema--turns 0 "Model calls made for the current user message.")
 (defvar-local ema--usage nil "Token totals: (:in N :cached N :out N).")
+(defvar-local ema--speed nil "Tokens per second of the last model call.")
 (defvar-local ema--out nil "Marker: where transcript text is inserted.")
 (defvar-local ema--input nil "Marker: where the user's input starts.")
 (defvar-local ema--pending nil "Contexts added to the input, newest first.")
@@ -230,7 +231,10 @@ makes trims rare."
 Each project has its own chat; the chat keeps its project across mode
 changes."
   (visual-line-mode 1)
-  (setq-local header-line-format '(:eval (ema--header))))
+  (setq-local header-line-format '(:eval (ema--header)))
+  (setq-local mode-line-buffer-identification
+              (list (propertized-buffer-identification "%b")
+                    '(:eval (ema--model-id)))))
 
 (defconst ema--spinner-frames ["⠋" "⠙" "⠹" "⠸" "⠼" "⠴" "⠦" "⠧" "⠇" "⠏"])
 (defvar ema--spin 0 "The current spinner frame.")
@@ -260,7 +264,8 @@ changes."
     (or ema-status-text
         (if (eq ema--phase 'cell)
             (format "running cell #%d" ema--cell-count)
-          (format "waiting for the model, call %d" ema--turns)))))
+          (format "waiting for the model, call %d%s" ema--turns
+                    (if ema--speed (format " · %d tok/s" ema--speed) ""))))))
 
 (defun ema--chats ()
   "Return the live chat buffers."
@@ -302,17 +307,20 @@ changes."
           ((< n 999500) (scaled (/ n 1000.0) "K"))
           (t (scaled (/ n 1000000.0) "M")))))
 
+(defun ema--model-id ()
+  "The provider and model in use, for the mode line after the buffer name."
+  (format "  %s/%s" ema-provider (plist-get (ema-provider-plist) :model)))
+
 (defun ema--header ()
-  (let ((p (ema-provider-plist)))
-    (format " %s%s/%s  ·  in %s (cached %s)  out %s%s"
-            (if (string-empty-p ema--tag) "" (concat ema--tag "  ·  "))
-            ema-provider (plist-get p :model)
-            (ema--human-number (or (plist-get ema--usage :in) 0))
-            (ema--human-number (or (plist-get ema--usage :cached) 0))
-            (ema--human-number (or (plist-get ema--usage :out) 0))
-            (if ema--busy
-                (format "  ·  %s %s  (C-c C-k stops)" (ema--spinner) (ema--activity))
-              ""))))
+  (format " %sin %s (cached %s)  out %s (%s/s)%s"
+          (if (string-empty-p ema--tag) "" (concat ema--tag "  ·  "))
+          (ema--human-number (or (plist-get ema--usage :in) 0))
+          (ema--human-number (or (plist-get ema--usage :cached) 0))
+          (ema--human-number (or (plist-get ema--usage :out) 0))
+          (if ema--speed (format "%d" ema--speed) "?")
+          (if ema--busy
+              (format "  ·  %s %s  (C-c C-k stops)" (ema--spinner) (ema--activity))
+            "")))
 
 (defun ema--reset ()
   "Erase the chat buffer and start a new conversation in it."
@@ -332,6 +340,7 @@ changes."
           ema--pending nil
           ema--turns 0
           ema--usage nil
+          ema--speed nil
           ema--conversation nil
           ema--requests nil
           ema--window-start 0
@@ -830,6 +839,13 @@ messages stay in the buffer's conversation and in the history."
 (defun ema--on-reply (reply)
   "Handle one model REPLY: show text, run cells, continue or end the turn."
   (let ((usage (plist-get reply :usage)))
+    (when (and ema--call-start usage)
+      (let ((secs (- (float-time) ema--call-start)))
+        (setq ema--speed
+              (if (> secs 0.2)
+                  (round (/ (or (plist-get usage :out) 0) secs))
+                ;; too fast to trust the clock: leave the last value
+                ema--speed))))
     (when ema--conversation
       (ema--history-call ema--conversation
                          (and ema--call-start

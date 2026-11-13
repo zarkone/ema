@@ -258,6 +258,25 @@ The directory is not a project, so the chat is \"*ema*\"."
                                  (plist-get (aref (plist-get (car ema--messages) :content) 0)
                                             :text))))))))
 
+(ert-deftest ema-token-speed-of-the-last-call ()
+  "The header and the activity show the out tokens per second of the last call."
+  (ema-tests--with-chat
+   (let ((chat (ema--chat-buffer)))
+     (with-current-buffer chat
+       ;; a small, slow call: 100 out tokens over 10 seconds
+       (let ((ema--call-start (- (float-time) 10.0)))
+         (ema--on-reply (list :content [(:type "text" :text "hi")]
+                              :stop "end_turn" :usage '(:in 10 :cached 0 :out 100))))
+       (should (= 10 ema--speed))
+       (should (string-match-p "out 100 (10/s)" (ema--header)))
+       (let ((ema--busy t))
+         (should (string-match-p "· 10 tok/s" (ema--activity))))
+       ;; a call too fast to trust the clock: the last speed stays
+       (let ((ema--call-start (- (float-time) 0.1)))
+         (ema--on-reply (list :content [(:type "text" :text "hi")]
+                              :stop "end_turn" :usage '(:in 10 :cached 0 :out 100))))
+       (should (= 10 ema--speed))))))
+
 (ert-deftest ema-secrets-in-auth-source ()
   (let* ((file (make-temp-file "ema-authinfo"))
          (auth-sources (list file))
