@@ -46,6 +46,56 @@ The directory is not a project, so the chat is \"*ema*\"."
   ;; an unbalanced cell is an error, not a silently shorter cell
   (should (string-prefix-p "error: " (ema-eval-cell "(setq ema-tests--x 1) (+ 1"))))
 
+(ert-deftest ema-tools-index-is-short-and-grouped ()
+  (let ((index (ema-tools-index '(ema-search ema-doc))))
+    ;; a daily tool has its signature; the others are names under a group
+    (should (string-match-p "^(ema-doc symbol) — " index))
+    (should (string-match-p "^(ema-search regexp &optional files dir show) — " index))
+    (should-not (string-match-p "(ema-memory-save " index))
+    (should (string-match-p "^Memory — ema-memory-save, ema-memory, " index))
+    ;; a group comes from the `;;;;' heading above the tool, or from the
+    ;; first line of a file without headings
+    (should (string-match-p "^Git — ema-git$" index))
+    (should (string-match-p "^Packages — ema-packages, ema-package-search, ema-install$"
+                            index))
+    (should (string-match-p "^Plans, todos and the org agenda — ema-agenda-files, " index))
+    ;; every tool is in the index exactly once
+    (dolist (sym (seq-difference ema-tools '(ema-doc ema-tool-group)))
+      (should (= 1 (with-temp-buffer
+                     (insert index)
+                     (emacs-lisp-mode)
+                     (how-many (format "\\_<%s\\_>" (regexp-quote (symbol-name sym)))
+                               (point-min) (point-max))))))
+    (should (< (length index) (/ (length (ema-tool-group)) 2))))
+  (should (string-match-p "^(ema-memory id) — " (ema-tool-group "memory")))
+  (should-error (ema-tool-group "no such group")))
+
+(ert-deftest ema-tools-daily-follows-the-history ()
+  (ema-tests--with-chat
+   (let ((ema-tools-daily-count 3) (ema-tools-daily-min-uses 2))
+     ;; an empty history: `ema-doc', then the seed
+     (should (equal (ema-tools-daily)
+                    (seq-take (seq-uniq (cons 'ema-doc ema-tools-daily-seed)) 3)))
+     (dotimes (n 2)
+       (ema--history-cell 1 n "(ema-todos) (ema-todos \"x\")" "=> x" 'done 1))
+     (ema--history-cell 1 3 "(ema-notes) (not-ema-todos)" "=> x" 'done 1)
+     (should (equal (seq-take (ema-tools-daily) 2) '(ema-doc ema-todos)))
+     (should-not (memq 'ema-notes (ema-tools-daily))))))
+
+(ert-deftest ema-cell-error-teaches-the-failed-tool ()
+  (skip-unless (fboundp 'handler-bind-1))
+  ;; a wrong call: the whole documentation
+  (let ((digest (ema-eval-cell "(ema-doc)")))
+    (should (string-prefix-p "error: " digest))
+    (should (string-match-p "The documentation of ema-doc:" digest))
+    (should (string-match-p "(ema-doc symbol)" digest)))
+  ;; another error inside a tool: one line
+  (let ((digest (ema-eval-cell "(ema-skill \"no such skill\")")))
+    (should (string-match-p "The failed tool: (ema-skill name) — " digest)))
+  ;; an error outside a tool, and an error that the cell handles: nothing
+  (should-not (string-match-p "tool" (ema-eval-cell "(car 1)")))
+  (should (equal (ema-eval-cell "(condition-case nil (ema-doc) (error 7))") "=> 7")))
+
 (ert-deftest ema-cell-state-persists ()
   (ema-eval-cell "(setq ema-tests--kept 41)")
   (should (equal (ema-eval-cell "(1+ ema-tests--kept)") "=> 42")))
@@ -61,7 +111,12 @@ The directory is not a project, so the chat is \"*ema*\"."
   (ema-tests--with-chat
    (ema-tool-save "(ema-deftool ema-tests-twice (n)\n  \"Return N times two.\"\n  (* 2 n))")
    (should (= 8 (ema-tests-twice 4)))
-   (should (string-match-p "(ema-tests-twice n) — Return N times two." (ema-tools-index)))
+   (should (string-match-p "(ema-tests-twice n) — Return N times two."
+                           (ema-tools-index '(ema-tests-twice))))
+   ;; a tool without a source heading is in the group of added tools
+   (should (string-match-p "^Added tools — ema-tests-twice$" (ema-tools-index)))
+   (should (string-match-p "(ema-tests-twice n) — Return N times two."
+                           (ema-tool-group "added")))
    (fmakunbound 'ema-tests-twice)
    (ema-load-tools)
    (should (= 8 (ema-tests-twice 4)))
@@ -512,9 +567,14 @@ The directory is not a project, so the chat is \"*ema*\"."
   (let ((files (ema-self-files)))
     (dolist (name '("ema.el" "ema-actions.el" "ema-org.el" "core.md" "self.md"))
       (should (string-match-p (regexp-quote name) files)))
-    (should (string-match-p "ema-llm\\.el — [A-Z]" files)))
-  (should (string-match-p "ema-actions\\.el" (ema-self-description)))
-  (dolist (skill '("intro" "self" "organizer"))
+    (should (string-match-p "ema-llm\\.el — [A-Z]" files))
+    ;; the folder says which files exist, not a list
+    (should (string-match-p "ema-tests\\.el — [A-Z]" files)))
+  ;; the prompt points at the list; it does not hold it
+  (should (string-match-p "ema-self-files" (ema-self-description)))
+  (should-not (string-match-p "ema-actions\\.el" (ema-self-description)))
+  (dolist (skill '("intro" "self" "organizer" "providers" "packages"
+                   "shortcuts" "extend"))
     (should (string-match-p (concat "^" skill " — ") (ema-skills-index))))
   (let ((ema--self-check-time nil))
     (should-error (ema-self-reload))))

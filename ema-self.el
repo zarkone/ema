@@ -50,7 +50,7 @@
         (error (message "ema: config not loaded: %s"
                         (error-message-string err)))))))
 
-;;;; Inspect
+;;;; Providers and models: inspect, test, switch
 
 (defun ema--has-key-p (plist)
   "Non-nil when provider PLIST needs no key or its key can be read."
@@ -113,7 +113,7 @@ instead of a model id from memory."
                               (ema--anthropic-headers p))))))
     (mapcar (lambda (m) (plist-get m :id)) (plist-get json :data))))
 
-;;;; Test, then switch
+;;; Test, then switch
 
 (defconst ema--probe-tool
   '(:name "eval" :description "Evaluate Emacs Lisp."
@@ -259,42 +259,23 @@ result of `ema-provider-switch', or \"declined\"."
   (format "
 ## Yourself
 
-You are an Emacs package and you can inspect and change yourself.
+You are an Emacs package that runs from source, and you can inspect and
+change yourself.
 
-- Source: %s, a git checkout:
-%s
-  Read them with `ema-outline' and `ema-buffer-text' when asked how you
-  work.  Before you change them, read `(ema-skill \"self\")`: it says
-  where a change belongs and how the test gate works.
+- Source: %s, a git checkout. `(ema-self-files)` lists the files and
+  what each holds. Before you change them, read `(ema-skill \"self\")`.
 - State: %s — tools/ (stored tools), skills/ (stored skills),
   config.eld (provider configurations).
-- The provider and model in use: `(ema-providers-list)`, the line with *.
+- Model: `(ema-providers-list)` shows the provider and model in use.
+  Never set `ema-provider' or `ema-providers' yourself, and never use a
+  model id from memory: read `(ema-skill \"providers\")` first.
+- Secrets are names (`llm.key.x'). Never read, print or ask for a key's
+  value, and never open or decrypt the auth-source file; a missing key
+  goes through `(ema-skill \"secrets\")`.
 - Limits are variables: `ema-max-turns', `ema-digest-limit',
   `ema-digest-full-limit', `ema-request-timeout'.
-
-To change the model or its configuration, never set `ema-provider' or
-`ema-providers' yourself:
-
-1. `(ema-providers-list)` shows the configurations; `(ema-provider-models
-   'NAME)` lists the real model ids. Do not use a model id from memory.
-2. When the user has not named an exact model, offer two to four options
-   with `(ema-provider-propose '((NAME \"MODEL\" \"why\") …) \"reason\")`:
-   the user picks in the Emacs UI, and the pick is tested before the
-   switch.
-3. When they named one, `(ema-provider-switch 'NAME \"MODEL\")`: it
-   tests the configuration through a separate adapter instance and
-   switches only when the test passes. `ema-provider-test' tests without
-   a switch; `ema-provider-add' defines a new endpoint.
-
-A switch takes effect at your next model call, so report the result in
-the same turn. Secrets are names (`llm.key.x'), kept in the user's
-auth-source file: never read, print or ask for a key's value, and never
-open or decrypt that file. When a key is missing, `(ema-secret-ask
-\"NAME\")` lets the user type it into the minibuffer; you do not see it.
-`(ema-skill \"secrets\")` has the setup for a user without one.
 "
           (abbreviate-file-name ema-source-directory)
-          (replace-regexp-in-string "^" "  " (ema-self-files))
           (abbreviate-file-name ema-directory)))
 
 ;;;; Secrets: status and entry, never values
@@ -349,7 +330,7 @@ and where they get the key."
             (clear-string value))))
     (quit "cancelled")))
 
-;;;; Restart
+;;;; Your own source: files, check, reload
 
 (defconst ema--source-files
   '("ema-llm" "ema-tools" "ema-history" "ema-self" "ema-org" "ema" "ema-actions")
@@ -358,21 +339,15 @@ and where they get the key."
 (ema-deftool ema-self-files ()
   "Return ema's own source files, one per line: \"name — what it holds\".
 The files are in `ema-source-directory'.  The list is read from the
-files themselves, so it is current."
+folder and from the first line of each file, so it is current."
   (mapconcat
    (lambda (file)
      (format "%s — %s" (file-name-nondirectory file)
-             (with-temp-buffer
-               (insert-file-contents file nil 0 300)
-               (let ((line (car (split-string (buffer-string) "\n"))))
-                 (string-trim
-                  (replace-regexp-in-string
-                   "-\\*-.*-\\*-" ""
-                   (replace-regexp-in-string "\\`[;# ]*\\(?:[^ ]+ --- \\)?" "" line)))))))
-   (append (mapcar (lambda (n) (expand-file-name (concat n ".el") ema-source-directory))
-                   ema--source-files)
-           (seq-filter #'file-exists-p
-                       (list (expand-file-name "ema-tests.el" ema-source-directory)))
+             (ema--file-summary file)))
+   (append (ema--self-paths)
+           ;; the folder, not a list, says which other files exist
+           (seq-difference (directory-files ema-source-directory t "\\`[^.#].*\\.el\\'")
+                           (ema--self-paths))
            (directory-files (expand-file-name "skills" ema-source-directory) t "\\.md\\'"))
    "\n"))
 

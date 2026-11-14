@@ -240,7 +240,7 @@ The keys are :messages, :requests ((SEQ . TEXT)…), :window-start and
     (sqlite-execute db "delete from conversations where id = ?" (list conversation))
     t))
 
-;;;; Tools for the agent
+;;;; History: earlier conversations
 
 (defvar ema--current-chat)
 
@@ -311,6 +311,38 @@ Example: select n, status, ms, substr(code, 1, 80) from cells
     (unwind-protect
         (seq-take (sqlite-select db sql) (or limit 200))
       (sqlite-execute db "pragma query_only = 0"))))
+
+;;; Which tools the prompt lists in full
+
+(defun ema--tool-uses (&optional limit)
+  "Return an alist (TOOL . CELLS): how many recorded cells call each tool.
+Only the latest LIMIT cells count (default 2000)."
+  (ema--with-history db
+    (let ((counts nil))
+      (dolist (row (sqlite-select
+                    db "select code from cells order by id desc limit ?"
+                    (list (or limit 2000))))
+        (let ((code (car row)) (start 0) (seen nil))
+          (while (string-match
+                  "\\(?:\\`\\|[^-a-z0-9]\\)\\(ema-[a-z0-9-]*[a-z0-9]\\)" code start)
+            (setq start (match-end 1))
+            (let ((sym (intern-soft (match-string 1 code))))
+              (when (and sym (memq sym ema-tools) (not (memq sym seen)))
+                (push sym seen)
+                (cl-incf (alist-get sym counts 0)))))))
+      counts)))
+
+(defun ema-tools-daily ()
+  "Return the tools that get a full line in the prompt.
+These are `ema-doc', then the tools that the history shows as much used
+\(`ema-tools-daily-min-uses'), then `ema-tools-daily-seed'; at most
+`ema-tools-daily-count' in all."
+  (let* ((used (seq-filter (lambda (c) (>= (cdr c) ema-tools-daily-min-uses))
+                           (ema--tool-uses)))
+         (ranked (mapcar #'car (sort used (lambda (a b) (> (cdr a) (cdr b)))))))
+    (seq-take (seq-filter (lambda (sym) (memq sym ema-tools))
+                          (seq-uniq (append '(ema-doc) ranked ema-tools-daily-seed)))
+              ema-tools-daily-count)))
 
 ;;;; Memory: short facts, global or for one project
 

@@ -37,13 +37,19 @@ for the buffer you are in.
 - **Emacs is the persistent kernel.** What a cell defines stays
   defined. A long result is cut and stored; `(ema-value N)` returns the
   live object, so ema slices it and does not fetch it again.
-- **Docstrings are the documentation.** The prompt lists every tool
-  with the first line of its docstring; `(ema-doc 'NAME)` returns the
-  rest. A new tool needs only a docstring to be known.
+- **Docstrings are the documentation.** The prompt gives the most used
+  tools one line each (signature and first docstring line) and names
+  the others by group; a group is the `;;;;` heading above the tool in
+  the source. `(ema-tool-group "NAME")` returns the signatures of a
+  group and `(ema-doc 'NAME)` the whole docstring. A failed call shows
+  the documentation of the tool. A new tool needs only a docstring to
+  be known.
 - **Skills are read on demand.** The prompt lists each skill with one
   line. Shipped: `intro` (the map of capabilities), `organizer` (plans,
   todos, the agenda), `history` (queries over earlier runs), `secrets`
-  (the setup of your keys), `self` (how ema changes itself).
+  (the setup of your keys), `self` (how ema changes itself), `providers`
+  (switch the model), `packages`, `shortcuts` (actions and context
+  kinds), `extend` (store tools, skills and memories).
 - **Emacs first, the shell last.** ema searches, reads files, runs
   checks and calls git through Emacs. `ema-shell` remains for quick
   commands and stops after `ema-shell-timeout` seconds, because a

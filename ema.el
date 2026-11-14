@@ -95,17 +95,44 @@ A cell result that is too long ends with the N to pass here."
         (push (read (current-buffer)) forms))
       (cons 'progn (nreverse forms)))))
 
-(defun ema--error-hint (err)
-  "Return a hint for error ERR, or an empty string."
-  (pcase err
-    (`(void-function ,sym)
-     (let ((near (apropos-internal (regexp-quote (symbol-name sym)) #'fboundp)))
-       (if near (format "\nDefined functions with a similar name: %s"
-                        (seq-take near 12))
-         "")))
-    (`(void-variable ,sym)
-     (format "\n%s is not bound. A variable set in an earlier cell persists only when it was set with setq or defvar, not let." sym))
-    (_ "")))
+(defun ema--failed-tool ()
+  "Return the innermost tool on the Lisp stack, or nil.
+Call it from an error handler that runs before the stack unwinds."
+  (catch 'found
+    (mapbacktrace (lambda (_evald fn &rest _)
+                    (when (and fn (symbolp fn) (memq fn ema-tools))
+                      (throw 'found fn))))
+    nil))
+
+(defun ema--call-watching (body note)
+  "Call BODY; when it signals an error, first call NOTE with the failed tool.
+Without `handler-bind-1' (before Emacs 30) NOTE is never called."
+  (if (fboundp 'handler-bind-1)
+      (handler-bind-1 body '(error)
+                      (lambda (_err) (funcall note (ema--failed-tool))))
+    (funcall body)))
+
+(defun ema--error-hint (err &optional tool)
+  "Return a hint for error ERR, or an empty string.
+TOOL is the tool in which the error came up.  The prompt names most
+tools without their signature, so a failed call shows the model what
+it did not read: the whole documentation after a wrong call, one line
+otherwise."
+  (concat
+   (pcase err
+     (`(void-function ,sym)
+      (let ((near (apropos-internal (regexp-quote (symbol-name sym)) #'fboundp)))
+        (if near (format "\nDefined functions with a similar name: %s"
+                         (seq-take near 12))
+          "")))
+     (`(void-variable ,sym)
+      (format "\n%s is not bound. A variable set in an earlier cell persists only when it was set with setq or defvar, not let." sym))
+     (_ ""))
+   (cond ((null tool) "")
+         ((memq (car err) '(wrong-number-of-arguments wrong-type-argument
+                            args-out-of-range))
+          (format "\nThe documentation of %s:\n%s" tool (ema-doc tool)))
+         (t (format "\nThe failed tool: %s" (ema--tool-line tool))))))
 
 (defun ema-eval-cell (code &optional full buffer)
   "Evaluate string CODE in BUFFER's context; return the digest for the model.
@@ -116,17 +143,20 @@ as text: a cell never signals."
   (let* ((limit (if full ema-digest-full-limit ema-digest-limit))
          (out (generate-new-buffer " *ema-out*"))
          (msg-mark (with-current-buffer (messages-buffer) (point-max-marker)))
-         (value nil) (failure nil))
+         (value nil) (failure nil) (tool nil))
     (unwind-protect
         (progn
           (condition-case err
               (with-current-buffer (if (buffer-live-p buffer) buffer (current-buffer))
                 (let ((standard-output out)
-                      (inhibit-quit nil))
-                  (setq value (eval (ema--read-all code) t))))
+                      (inhibit-quit nil)
+                      (form (ema--read-all code)))
+                  (setq value (ema--call-watching
+                               (lambda () (eval form t))
+                               (lambda (failed) (setq tool failed))))))
             (quit (setq failure "Quit: the user stopped this cell with C-g."))
             (error (setq failure (concat "error: " (error-message-string err)
-                                         (ema--error-hint err)))))
+                                         (ema--error-hint err tool)))))
           (let ((printed (with-current-buffer out (buffer-string)))
                 (messages (with-current-buffer (messages-buffer)
                             (string-trim (buffer-substring-no-properties
@@ -162,11 +192,12 @@ as text: a cell never signals."
 (defvar ema--project)
 
 (defun ema--system-prompt ()
-  "Build the system prompt: the core skill, the tool list, the skill list."
+  "Build the system prompt: the core skill, the tool list, the skill list.
+The tool list has a full line only for the most used tools."
   (concat (ema-skill "core")
           (ema-self-description)
           (ema-memory-section ema--project)
-          "\n## Tools\n\n" (ema-tools-index)
+          "\n## Tools\n\n" (ema-tools-index (ema-tools-daily))
           "\n\n## Skills\n\n"
           (let ((s (ema-skills-index)))
             (if (string-empty-p s) "(none yet)" s))

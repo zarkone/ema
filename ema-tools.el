@@ -4,9 +4,9 @@
 
 ;; A "tool" here is an ordinary Emacs Lisp function with a docstring,
 ;; defined with `ema-deftool'.  The docstring is the only documentation:
-;; the system prompt lists every tool with its first docstring line, and
-;; the agent reads the rest with `describe-function' semantics
-;; (`ema-doc').  The agent extends itself with `ema-tool-save', which
+;; the system prompt lists the most used tools with their first docstring
+;; line and names the others by group, and the agent reads the rest
+;; with `describe-function' semantics (`ema-doc').  The agent extends itself with `ema-tool-save', which
 ;; stores a new tool in `ema-directory'/tools/ so the next Emacs session
 ;; loads it again.  Skills are the same idea for prose: Markdown notes.
 
@@ -65,18 +65,122 @@ DOC is mandatory: its first line goes into the tool list the model reads."
        (setq ema-tools (append ema-tools (list ',name))))
      ',name))
 
-(defun ema-tools-index ()
-  "Return the tool list as text: one signature and summary per line."
-  (mapconcat
-   (lambda (sym)
-     (format "(%s) — %s"
-             (string-join (cons (symbol-name sym)
-                                (mapcar #'symbol-name (help-function-arglist sym t)))
-                          " ")
-             (car (split-string (or (documentation sym t) "") "\n"))))
-   ema-tools "\n"))
+;;;; The tool list of the prompt
 
-;;;; Self-extension: stored tools
+;; The prompt does not list every tool with its signature: that list
+;; was the largest part of the prompt.  The most used tools get a full
+;; line; the others are named under their group, and the agent reads a
+;; signature when it needs one (`ema-doc', `ema-tool-group').  A group
+;; is the `;;;;' heading above the tool in its source file, so the
+;; source is the one place that says what belongs together.
+
+(defcustom ema-tools-daily-count 14
+  "How many tools get a full line (signature and summary) in the prompt.
+They are the most used ones in the history, then `ema-tools-daily-seed'."
+  :type 'integer :group 'ema)
+
+(defcustom ema-tools-daily-min-uses 5
+  "A tool counts as much used when at least this many recorded cells call it."
+  :type 'integer :group 'ema)
+
+(defvar ema-tools-daily-seed
+  '(ema-doc ema-buffer-text ema-search ema-outline ema-show ema-suggest
+    ema-edit ema-note ema-run ema-run-result ema-git ema-shell ema-skill
+    ema-xref ema-diagnostics)
+  "Tools that get a full line in the prompt while the history says little.")
+
+(defconst ema--added-group "Added tools"
+  "The group of a tool that has no source heading: a stored or a session tool.")
+
+(defun ema--file-summary (file)
+  "Return what FILE says it holds: its first line without the comment marks."
+  (with-temp-buffer
+    (insert-file-contents file nil 0 300)
+    (let ((line (car (split-string (buffer-string) "\n"))))
+      (string-trim
+       (replace-regexp-in-string
+        "-\\*-.*-\\*-" ""
+        (replace-regexp-in-string "\\`[;# ]*\\(?:[^ ]+ --- \\)?" "" line))))))
+
+(defun ema--tool-line (sym)
+  "Return the full line of tool SYM: its signature and its summary."
+  (format "(%s) — %s"
+          (string-join (cons (symbol-name sym)
+                             (mapcar #'symbol-name (help-function-arglist sym t)))
+                       " ")
+          (car (split-string (or (documentation sym t) "") "\n"))))
+
+(defun ema--file-tool-groups (file)
+  "Return an alist (TOOL-NAME . GROUP) read from source FILE.
+GROUP is the `;;;;' heading above the `ema-deftool' form; a tool above
+the first heading belongs to the group named by the summary of FILE."
+  (with-temp-buffer
+    (insert-file-contents file)
+    (let ((heading nil) (out nil))
+      (while (re-search-forward
+              "^\\(?:;;;; +\\(.+\\)\\|(ema-deftool +\\([^ \t\n()]+\\)\\)" nil t)
+        (if (match-beginning 1)
+            (setq heading (string-trim (match-string 1)))
+          (push (cons (match-string 2) (or heading (ema--file-summary file))) out)))
+      out)))
+
+(defun ema--tool-source (sym)
+  "Return the source file that defines tool SYM, or nil for an added tool."
+  (let* ((file (symbol-file sym 'defun))
+         (file (and file (concat (file-name-sans-extension file) ".el"))))
+    (and file (file-readable-p file)
+         (not (file-in-directory-p file (expand-file-name "tools/" ema-directory)))
+         file)))
+
+(defun ema-tool-groups ()
+  "Return the tools by group: a list of (TITLE TOOL...), in definition order."
+  (let ((files nil) (groups nil))
+    (dolist (sym ema-tools)
+      (let* ((file (ema--tool-source sym))
+             (known (and file
+                         (or (assoc file files)
+                             (car (push (cons file (ema--file-tool-groups file))
+                                        files)))))
+             (title (or (cdr (assoc (symbol-name sym) (cdr known)))
+                        ema--added-group))
+             (group (assoc title groups)))
+        (if group
+            (nconc group (list sym))
+          (setq groups (nconc groups (list (list title sym)))))))
+    groups))
+
+(defun ema--group-name (title)
+  "Return the short name of group TITLE: the part before a colon or a bracket."
+  (string-trim (car (split-string title "[:(]"))))
+
+(defun ema-tools-index (&optional daily)
+  "Return the tool list of the prompt.
+DAILY is a list of tools: each gets a full line, its signature and its
+summary.  The other tools are named under the short name of their
+group; `ema-tool-group' and `ema-doc' return their signatures."
+  (let* ((daily (seq-filter (lambda (sym) (memq sym daily)) ema-tools))
+         (rest (delq nil
+                     (mapcar
+                      (lambda (group)
+                        (let ((names (seq-remove (lambda (sym) (memq sym daily))
+                                                 (cdr group))))
+                          (and names
+                               (format "%s — %s" (ema--group-name (car group))
+                                       (mapconcat #'symbol-name names ", ")))))
+                      (ema-tool-groups)))))
+    (concat
+     (and daily
+          (concat "The tools you use most, with their signatures:\n\n"
+                  (mapconcat #'ema--tool-line daily "\n")))
+     (and daily rest "\n\n")
+     (and rest
+          (concat (if daily "The other tools" "The tools")
+                  ", by group, names only. Before the first call of one,"
+                  " read `(ema-doc 'NAME)`, or `(ema-tool-group \"GROUP\")`"
+                  " for the signatures of a whole group:\n\n"
+                  (string-join rest "\n"))))))
+
+;;;; Discover and extend: documentation, stored tools
 
 (defun ema--tools-dir ()
   (let ((dir (expand-file-name "tools/" ema-directory)))
@@ -129,6 +233,22 @@ cell first; store it when it works."
     (setq ema-tools (delq name ema-tools))
     (fmakunbound name)
     (format "deleted %s" name)))
+
+(ema-deftool ema-tool-group (&optional name)
+  "Return the tools of group NAME, one per line: signature and summary.
+NAME is the start of a group name in `## Tools', in any case.  Without
+NAME, return every group.  `(ema-doc \='TOOL)' has the whole
+documentation of one tool."
+  (let* ((groups (ema-tool-groups))
+         (hits (if name
+                   (seq-filter (lambda (g) (string-prefix-p name (car g) t)) groups)
+                 groups)))
+    (unless hits
+      (error "No tool group %s; groups: %s" name
+             (mapconcat (lambda (g) (ema--group-name (car g))) groups ", ")))
+    (mapconcat (lambda (g)
+                 (concat (car g) "\n" (mapconcat #'ema--tool-line (cdr g) "\n")))
+               hits "\n\n")))
 
 ;;;; Skills: prose notes
 
@@ -787,6 +907,25 @@ what the user has.  Use it to find a package to suggest."
         (when (string-match-p regexp line) (push line out))))
     (string-join (seq-take (sort out #'string<) 40) "\n")))
 
+(ema-deftool ema-install (package &optional why)
+  "Ask the user, then install Emacs PACKAGE (a symbol) from the archives.
+WHY is one line on what the package gives them; it is part of the
+question.  Returns the installed version, or \"declined\".  The feature
+still needs a `require'."
+  (cond
+   ((package-installed-p package)
+    (format "%s is already installed" package))
+   ((not (y-or-n-p (format "ema wants to install %s%s. Install? " package
+                           (if why (concat " (" (string-trim-right why "[. ]+") ")") ""))))
+    "declined")
+   (t
+    (unless (assq package package-archive-contents)
+      (package-refresh-contents))
+    (package-install package)
+    (format "%s %s installed" package
+            (package-version-join
+             (package-desc-version (cadr (assq package package-alist))))))))
+
 ;;;; The system around Emacs
 
 (defcustom ema-shell-timeout 10
@@ -921,25 +1060,6 @@ Example: (ema-git \"commit\" \"-m\" \"Fix the parser\" \"parse.el\")"
            (ignore-errors (magit-toplevel)))
       (ema--git-magit args)
     (ema--git-plain args)))
-
-(ema-deftool ema-install (package &optional why)
-  "Ask the user, then install Emacs PACKAGE (a symbol) from the archives.
-WHY is one line on what the package gives them; it is part of the
-question.  Returns the installed version, or \"declined\".  The feature
-still needs a `require'."
-  (cond
-   ((package-installed-p package)
-    (format "%s is already installed" package))
-   ((not (y-or-n-p (format "ema wants to install %s%s. Install? " package
-                           (if why (concat " (" (string-trim-right why "[. ]+") ")") ""))))
-    "declined")
-   (t
-    (unless (assq package package-archive-contents)
-      (package-refresh-contents))
-    (package-install package)
-    (format "%s %s installed" package
-            (package-version-join
-             (package-desc-version (cadr (assq package package-alist))))))))
 
 (provide 'ema-tools)
 ;;; ema-tools.el ends here

@@ -389,7 +389,7 @@ shortcuts that you or ema added."
     (cl-pushnew 'embark--ignore-target
                 (alist-get cmd embark-target-injection-hooks))))
 
-;;;; Saved actions; tools for the agent
+;;;; Actions: the shortcuts of the user
 
 (defun ema--actions-file ()
   (expand-file-name "actions.eld" ema-directory))

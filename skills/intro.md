@@ -4,7 +4,7 @@ Read this when the user asks what you can do, how to use you, or when
 you are not sure that you have a capability. This note is a map. The
 live lists are the truth; read them before you state a detail:
 
-- `(ema-tools-index)`: every tool, one line each. `(ema-doc 'NAME)`: the rest.
+- `(ema-tool-group)`: every tool by group, one line each. `(ema-doc 'NAME)`: the rest.
 - `(ema-actions-list)`: the user's shortcuts, with keys.
 - `(ema-skills-index)`: the skills. `(ema-skill "NAME")`: one skill.
 - `(substitute-command-keys "\\{ema-command-map}")`: the keys of the prefix map.
