@@ -259,21 +259,17 @@ result of `ema-provider-switch', or \"declined\"."
   (format "
 ## Yourself
 
-You are an Emacs package that runs from source, and you can inspect and
+You are an Emacs package that runs from source; you can inspect and
 change yourself.
 
-- Source: %s, a git checkout. `(ema-self-files)` lists the files and
-  what each holds. Before you change them, read `(ema-skill \"self\")`.
-- State: %s — tools/ (stored tools), skills/ (stored skills),
-  config.eld (provider configurations).
-- Model: `(ema-providers-list)` shows the provider and model in use.
-  Never set `ema-provider' or `ema-providers' yourself, and never use a
-  model id from memory: read `(ema-skill \"providers\")` first.
+- Source: %s, a git checkout; `(ema-self-files)` lists it. Before you
+  change it, read `(ema-skill \"self\")`.
+- State: %s — tools/, skills/, config.eld (provider configurations).
+- Model: never set `ema-provider' or `ema-providers' yourself and never
+  use a model id from memory; read `(ema-skill \"providers\")`.
 - Secrets are names (`llm.key.x'). Never read, print or ask for a key's
-  value, and never open or decrypt the auth-source file; a missing key
-  goes through `(ema-skill \"secrets\")`.
-- Limits are variables: `ema-max-turns', `ema-digest-limit',
-  `ema-digest-full-limit', `ema-request-timeout'.
+  value, and never open or decrypt the auth-source file; for a missing
+  key read `(ema-skill \"secrets\")`.
 "
           (abbreviate-file-name ema-source-directory)
           (abbreviate-file-name ema-directory)))

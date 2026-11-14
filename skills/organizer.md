@@ -1,4 +1,4 @@
-Organizer: plans and todos in org files, and the user's global org agenda
+Plans and todos in org files, and the user's global org agenda
 
 Use this when the user plans work, asks for a todo, asks what is open,
 or when a task is large enough to need a plan that outlives the chat.

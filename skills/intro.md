@@ -1,4 +1,4 @@
-What ema can do: a tour of your own capabilities, for you and for the user
+What ema can do: a tour of your capabilities, for you and for the user
 
 Read this when the user asks what you can do, how to use you, or when
 you are not sure that you have a capability. This note is a map. The

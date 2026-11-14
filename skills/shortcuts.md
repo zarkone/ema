@@ -1,4 +1,4 @@
-Shortcuts: actions on a key, and what "this" means in each kind of buffer
+Actions on a key, and what "this" means in each kind of buffer
 
 ## Context functions
 

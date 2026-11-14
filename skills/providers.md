@@ -1,4 +1,4 @@
-Providers and models: list, test and switch the model you run on
+List, test and switch the provider and the model you run on
 
 `(ema-providers-list)` shows the configurations; the line with * is the
 one in use. To change the model or its configuration, never set

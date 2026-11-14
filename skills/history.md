@@ -1,4 +1,4 @@
-History: read earlier conversations and analyze runs in the SQLite database
+Read earlier conversations and analyze runs in the SQLite database
 
 Every conversation is recorded in one database, history.sqlite in the
 state directory: the messages as they went to the model, each model call

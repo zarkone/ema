@@ -1,4 +1,4 @@
-Change ema itself: where a change goes, and the test gate before a reload
+Change your own source: where a change goes, and the test gate before a reload
 
 You run from source. `ema-source-directory` is a git checkout of your
 own code; `(ema-self-files)` lists the files and what each holds.
@@ -11,7 +11,7 @@ own code; `(ema-self-files)` lists the files and what each holds.
 | A new shortcut | An action | `ema-action-save` |
 | "This" to mean something in another mode | A context function | `ema-tool-save`, then add it to `ema-context-functions` |
 | Know-how, a preference, a fact about this machine | A skill | `ema-skill-save` |
-| A different limit or default | A variable | set it; tell the user the line for their init file |
+| A different limit or default | A variable (`ema-max-turns`, `ema-digest-limit`, `ema-digest-full-limit`, `ema-request-timeout`, `ema-tools-daily-count`) | set it; tell the user the line for their init file |
 | Different core behaviour: the loop, the chat buffer, the adapters, a built-in tool, the prompt | The source | the procedure below |
 
 Prefer the upper rows. They are in the state directory, they take

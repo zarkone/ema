@@ -1,4 +1,4 @@
-Extend yourself: store a tool, a skill or a memory so that it is there next time
+Store a tool, a skill or a memory so that it is there next time
 
 ## A tool
 

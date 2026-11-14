@@ -74,7 +74,7 @@ DOC is mandatory: its first line goes into the tool list the model reads."
 ;; is the `;;;;' heading above the tool in its source file, so the
 ;; source is the one place that says what belongs together.
 
-(defcustom ema-tools-daily-count 14
+(defcustom ema-tools-daily-count 12
   "How many tools get a full line (signature and summary) in the prompt.
 They are the most used ones in the history, then `ema-tools-daily-seed'."
   :type 'integer :group 'ema)
@@ -175,9 +175,9 @@ group; `ema-tool-group' and `ema-doc' return their signatures."
      (and daily rest "\n\n")
      (and rest
           (concat (if daily "The other tools" "The tools")
-                  ", by group, names only. Before the first call of one,"
-                  " read `(ema-doc 'NAME)`, or `(ema-tool-group \"GROUP\")`"
-                  " for the signatures of a whole group:\n\n"
+                  ", names only, by group. Before the first call of one,"
+                  " read `(ema-doc 'NAME)` or, for a whole group,"
+                  " `(ema-tool-group \"GROUP\")`:\n\n"
                   (string-join rest "\n"))))))
 
 ;;;; Discover and extend: documentation, stored tools

@@ -37,13 +37,16 @@ for the buffer you are in.
 - **Emacs is the persistent kernel.** What a cell defines stays
   defined. A long result is cut and stored; `(ema-value N)` returns the
   live object, so ema slices it and does not fetch it again.
-- **Docstrings are the documentation.** The prompt gives the most used
-  tools one line each (signature and first docstring line) and names
-  the others by group; a group is the `;;;;` heading above the tool in
-  the source. `(ema-tool-group "NAME")` returns the signatures of a
-  group and `(ema-doc 'NAME)` the whole docstring. A failed call shows
-  the documentation of the tool. A new tool needs only a docstring to
-  be known.
+- **Docstrings are the documentation.** A new tool needs only a
+  docstring to be known.
+- **Tools are discovered, not listed.** The prompt gives a full line
+  (signature and first docstring line) only to the tools that the
+  history shows as most used. It names the others under their group; a
+  group is the `;;;;` heading above the tool in the source. ema reads
+  the rest when it needs it: `(ema-tool-group "NAME")` returns the
+  signatures of a group and `(ema-doc 'NAME)` the whole docstring. A
+  call that fails shows the documentation of the tool, so a wrong
+  guess costs one turn.
 - **Skills are read on demand.** The prompt lists each skill with one
   line. Shipped: `intro` (the map of capabilities), `organizer` (plans,
   todos, the agenda), `history` (queries over earlier runs), `secrets`
@@ -199,6 +202,8 @@ compiles and runs the tests in a separate Emacs (`ema-self-check`).
 | `ema-max-turns` | 40 | Model calls for one message before ema stops and asks |
 | `ema-context-high`, `ema-context-low` | 120000, 60000 | The window, in input tokens |
 | `ema-memory-window` | `(15 . 25)` | Memory titles in the prompt: global and project |
+| `ema-tools-daily-count` | 12 | Tools with a full line in the prompt; the others are names in groups |
+| `ema-tools-daily-min-uses` | 5 | Recorded cells that call a tool before it counts as much used |
 | `ema-shell-timeout` | 10 | Seconds before `ema-shell` stops a command |
 | `ema-digest-limit` | 4000 | Characters of a cell result that the model sees |
 | `ema-display-action` | a side window | Where the chat opens |
@@ -210,12 +215,12 @@ compiles and runs the tests in a separate Emacs (`ema-self-check`).
 |---|---|
 | `ema.el` | The cell evaluator, the chats, the loop, the window, resume |
 | `ema-llm.el` | Providers (Anthropic and OpenAI-compatible wire formats), secrets, HTTP |
-| `ema-tools.el` | `ema-deftool` and the built-in tools |
+| `ema-tools.el` | `ema-deftool`, the tool list of the prompt and the built-in tools |
 | `ema-history.el` | The SQLite history and the memories |
 | `ema-self.el` | Provider test and switch, the self check, the saved configuration |
 | `ema-org.el` | Todos in org files, the agenda |
 | `ema-actions.el` | Context at point, the prefix keymap, the menu, actions |
-| `skills/core.md` | The system prompt |
+| `skills/core.md` | The fixed part of the system prompt; the tool, skill and memory lists are generated |
 | `skills/*.md` | Skills that ema reads on demand |
 | `ema-tests.el` | The tests: `make test`; `make compile` checks for warnings |
 

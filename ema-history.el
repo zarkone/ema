@@ -377,8 +377,8 @@ These are `ema-doc', then the tools that the history shows as much used
                                 rows "\n"))))
        (concat
         "\n## Memory\n\n"
-        "These are titles of facts you saved in earlier conversations: global ones and the ones of this project. "
-        "Read a body with `(ema-memory ID)` when a title fits the task, and save what will matter again with `ema-memory-save`.\n"
+        "Titles of the facts you saved in earlier conversations. "
+        "Read a body with `(ema-memory ID)` when a title fits the task.\n"
         (if global (concat "\nGlobal:\n" (funcall lines global) "\n") "")
         (if local (concat "\nThis project:\n" (funcall lines local) "\n") "")
         (if (or global local) "" "\n(no memories yet)\n")

@@ -1,4 +1,4 @@
-Packages: use what the user has; how to suggest and install one
+Use the packages the user has; how to suggest and install one
 
 The user's packages decide how this Emacs works. `(ema-packages
 "regexp")` lists what is installed; use what they have, the way they

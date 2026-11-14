@@ -1,4 +1,4 @@
-Secrets: set up the encrypted key file and add a provider key, without ever seeing a value
+Set up the encrypted key file and add a provider key, without seeing a value
 
 Use this when a model call fails with "no secret", when the user wants
 another provider, or when they ask how keys work.
