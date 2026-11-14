@@ -18,8 +18,9 @@ CLOSED: [2026-11-13 Fri 02:44]
 over the seconds of each model call, shown in the status bar or the
 header while streaming/completing.
 
-* TODO should we show numbers with ema-buffer text?
-i don't think so
+* DONE should we show numbers with ema-buffer text?
+CLOSED: [2026-11-15 Sun 00:51]
+i don't think so -- lets think?
 #+begin_src ema-cells
 ── ema #15 · 02:34:30 ──
 (ema-buffer-text "~/code/ema/ema-tests.el" 215 250)

@@ -390,11 +390,11 @@ The directory is not a project, so the chat is \"*ema*\"."
   (let ((file (make-temp-file "ema-text" nil ".txt" "a\nb\nc\n")))
     (unwind-protect
         (progn
-          (should (equal (ema-buffer-text file 2 3) "2\tb\n3\tc"))
+          (should (equal (ema-buffer-text file 2 3) "b\nc"))
           (should-not (find-buffer-visiting file))
           (with-temp-buffer
             (insert "x\ny")
-            (should (equal (ema-buffer-text (buffer-name)) "1\tx\n2\ty")))
+            (should (equal (ema-buffer-text (buffer-name)) "x\ny")))
           (should-error (ema-buffer-text "/no/such/file"))
           ;; secret files are refused, as a file and as an open buffer
           (should-error (ema-buffer-text "~/.authinfo.gpg"))

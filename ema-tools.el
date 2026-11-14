@@ -366,8 +366,8 @@ With REGEXP, only buffers whose name or file matches.  Internal buffers
   (when (ema--secret-file-p file)
     (error "%s holds secrets; ema does not read it" (abbreviate-file-name file))))
 
-(defun ema--numbered-lines (from-line to-line)
-  "Return lines FROM-LINE..TO-LINE of the current buffer with line numbers."
+(defun ema--lines (from-line to-line)
+  "Return lines FROM-LINE..TO-LINE of the current buffer, as plain text."
   (save-excursion
     (save-restriction
       (widen)
@@ -375,15 +375,15 @@ With REGEXP, only buffers whose name or file matches.  Internal buffers
       (forward-line (1- (or from-line 1)))
       (let ((n (or from-line 1)) lines)
         (while (and (not (eobp)) (or (null to-line) (<= n to-line)))
-          (push (format "%d\t%s" n (buffer-substring-no-properties
-                                    (line-beginning-position) (line-end-position)))
+          (push (buffer-substring-no-properties
+                 (line-beginning-position) (line-end-position))
                 lines)
           (setq n (1+ n))
           (forward-line 1))
         (string-join (nreverse lines) "\n")))))
 
 (ema-deftool ema-buffer-text (buffer-or-file &optional from-line to-line)
-  "Return the text of BUFFER-OR-FILE with line numbers.
+  "Return the text of BUFFER-OR-FILE, as it is: no line numbers.
 BUFFER-OR-FILE is a buffer name or a file path.  A file that is open is
 read from its buffer, with the unsaved changes; a file that is not open
 is read from disk and stays closed.  FROM-LINE and TO-LINE bound the
@@ -393,11 +393,11 @@ part; the default is the whole text.  Use this, not sed or cat."
                       (find-buffer-visiting (expand-file-name buffer-or-file))))))
     (ema--refuse-secret-file (if buf (buffer-file-name buf) buffer-or-file))
     (cond
-     (buf (with-current-buffer buf (ema--numbered-lines from-line to-line)))
+     (buf (with-current-buffer buf (ema--lines from-line to-line)))
      ((and (stringp buffer-or-file) (file-regular-p buffer-or-file))
       (with-temp-buffer
         (insert-file-contents buffer-or-file)
-        (ema--numbered-lines from-line to-line)))
+        (ema--lines from-line to-line)))
      (t (error "No buffer and no file named %s" buffer-or-file)))))
 
 ;;;; Projects
