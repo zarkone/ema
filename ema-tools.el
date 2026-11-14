@@ -1018,6 +1018,8 @@ the command still runs, do other work or end your turn and say so."
 (declare-function magit-process-buffer "magit-process")
 (declare-function magit-toplevel "magit-git")
 (declare-function magit-refresh "magit-mode")
+(declare-function magit-get-mode-buffer "magit-mode")
+(declare-function magit-status-setup-buffer "magit-status")
 (defvar magit-root-section)
 
 (defconst ema--git-read-commands
@@ -1031,8 +1033,18 @@ the command still runs, do other work or end your turn and say so."
     (let ((code (apply #'process-file "git" nil t nil args)))
       (list :exit code :output (buffer-string) :via 'git))))
 
+(defun ema--show-magit-status ()
+  "Show the magit status buffer of this repository; do not select it.
+A status buffer that is already in a window stays where it is."
+  (ignore-errors
+    (let ((buf (or (magit-get-mode-buffer 'magit-status-mode)
+                   (save-window-excursion (magit-status-setup-buffer)))))
+      (when (and (buffer-live-p buf) (not (get-buffer-window buf)))
+        (ema--side-window buf)))))
+
 (defun ema--git-magit (args)
-  "Run git ARGS through magit: logged in its process buffer, then a refresh."
+  "Run git ARGS through magit: logged in its process buffer, then a refresh.
+After a commit the magit status buffer is shown."
   (let* ((code (apply #'magit-call-git args))
          (out (ignore-errors
                 (with-current-buffer (magit-process-buffer t)
@@ -1041,15 +1053,19 @@ the command still runs, do other work or end your turn and say so."
                       (buffer-substring-no-properties
                        (eieio-oref section 'content) (eieio-oref section 'end))))))))
     (ignore-errors (magit-refresh))
+    ;; the user sees the result of a commit where they look at commits
+    (when (and (equal (car args) "commit") (eql code 0))
+      (ema--show-magit-status))
     (list :exit code :output (or out "") :via 'magit)))
 
 (ema-deftool ema-git (&rest args)
   "Run git with ARGS (strings) in the current directory; use it for all git.
 Returns (:exit CODE :output STRING :via magit-or-git).  A command that
 changes the repository (add, commit, checkout, stash, …) goes through
-magit when the user has it: it appears in the magit process buffer and
-the magit buffers refresh.  A read (status, log, diff, show, …) and a
-session without magit use plain git.  For another repository bind
+magit when the user has it: it appears in the magit process buffer, the
+magit buffers refresh, and a commit shows the magit status buffer.  A
+read (status, log, diff, show, …) and a session without magit use plain
+git.  For another repository bind
 `default-directory' around the call.  To show the user the state, use
 the magit commands themselves (`magit-status', `magit-diff-…', `magit-log-…').
 Example: (ema-git \"commit\" \"-m\" \"Fix the parser\" \"parse.el\")"
