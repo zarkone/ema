@@ -67,6 +67,12 @@
        body text not null default '',
        created real not null,
        updated real not null)"
+    "create table if not exists project_config (
+       project text primary key,  -- project root (absolute path), or 'default'
+       provider text not null,    -- key in ema-providers
+       model text,                -- null = the provider's own default model
+       options text,              -- JSON of overrides: effort, ...
+       updated real not null)"
     "create index if not exists memories_project on memories (project, updated)"
     "create index if not exists messages_conv on messages (conversation, seq)"
     "create index if not exists calls_conv on calls (conversation)"
@@ -118,6 +124,37 @@
   "Serialize OBJ to JSON as a multibyte string."
   (decode-coding-string (ema--json-encode obj) 'utf-8))
 
+;;;; Stored provider configurations (see `ema-current-config')
+
+(defun ema--config-row (key)
+  "Return the stored configuration of KEY, or nil.
+KEY is a project root or `ema-default-config-key'.  The result is a plist
+\(:provider SYMBOL :model STRING-OR-NIL :options PLIST)."
+  (ema--with-history db
+    (when-let* ((r (car (sqlite-select
+                         db "select provider, model, options from project_config
+                             where project = ?"
+                         (list key)))))
+      (list :provider (intern (nth 0 r))
+            :model (and (stringp (nth 1 r)) (nth 1 r))
+            :options (and (stringp (nth 2 r)) (ema--json-parse (nth 2 r)))))))
+
+(defun ema-config-save (key provider model options)
+  "Store PROVIDER, MODEL and OPTIONS for KEY; return non-nil when written.
+KEY is a project root or `ema-default-config-key'.  MODEL may be nil (the
+provider's own); OPTIONS is a plist of overrides such as :effort."
+  (prog1 (ema--with-history db
+           (sqlite-execute
+            db "insert or replace into project_config
+                  (project, provider, model, options, updated)
+                values (?, ?, ?, ?, ?)"
+            (list key (symbol-name provider) model
+                  (and options (ema--json-text options)) (float-time)))
+           t)
+    (ema-config-flush)))
+
+(setq ema-config-store-function #'ema--config-row)
+
 (defun ema--blocks-text (content)
   "Return the plain text of the blocks in CONTENT, for the search index."
   (mapconcat (lambda (block)
@@ -146,7 +183,7 @@
        db "insert into conversations
              (project, started, updated, title, provider, model, ema_commit, prompt)
            values (?, ?, ?, ?, ?, ?, ?, ?)"
-       (list project now now title (symbol-name ema-provider)
+       (list project now now title (symbol-name (ema-current-provider))
              (plist-get p :model) (ema--source-commit) hash))
       (caar (sqlite-select db "select last_insert_rowid()")))))
 
@@ -174,7 +211,7 @@
        db "insert into calls (conversation, provider, model, ms, tokens_in,
              tokens_cached, tokens_out, stop, error, time)
            values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
-       (list conversation (symbol-name ema-provider) (plist-get p :model) ms
+       (list conversation (symbol-name (ema-current-provider)) (plist-get p :model) ms
              (plist-get usage :in) (plist-get usage :cached) (plist-get usage :out)
              stop error (float-time))))))
 

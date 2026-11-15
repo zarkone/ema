@@ -17,6 +17,8 @@
 
 (defvar url-http-end-of-headers)
 (defvar url-http-response-status)
+(declare-function ema--project-root "ema")
+(declare-function ema-config-save "ema-history")
 
 (defvar ema-source-directory
   (file-name-directory (or load-file-name buffer-file-name default-directory))
@@ -58,9 +60,11 @@
       (and (ignore-errors (funcall ema-secret-function (plist-get plist :key))) t)))
 
 (defun ema--provider-line (cell)
-  (let ((p (cdr cell)))
+  (let* ((current (eq (car cell) (ema-current-provider)))
+         ;; the one in use shows the model and options of this project
+         (p (if current (plist-get (ema-current-config) :plist) (cdr cell))))
     (format "%s%s  model %s  api %s  %s  key %s%s"
-            (if (eq (car cell) ema-provider) "* " "  ")
+            (if current "* " "  ")
             (car cell) (plist-get p :model) (plist-get p :api)
             (plist-get p :url)
             (cond ((null (plist-get p :key)) "not needed")
@@ -181,22 +185,56 @@ is saved but not used: test it, then switch."
   (ema-save-config)
   (ema--provider-line (assq name ema-providers)))
 
-(ema-deftool ema-provider-switch (name &optional model &rest overrides)
-  "Test provider NAME with MODEL and OVERRIDES; switch to it when the test passes.
-On a failed test nothing changes and the reason comes back.  On success
-the configuration is saved, and the conversation continues on the new
-model from the next call on."
+(defun ema--switch (name model overrides scope)
+  "Test provider NAME with MODEL and OVERRIDES; store it for SCOPE when it passes.
+SCOPE is a project root or `ema-default-config-key'.  Return a message."
   (let* ((plist (ema--candidate name model overrides))
          (result (ema--probe plist)))
     (if (not (plist-get result :ok))
         (format "NOT switched: %s/%s failed the test: %s"
                 name (plist-get plist :model) (plist-get result :detail))
-      (setf (alist-get name ema-providers) plist)
-      (setq ema-provider name)
-      (ema-save-config)
-      (force-mode-line-update t)
-      (format "switched to %s/%s (test passed in %d ms)"
-              name (plist-get plist :model) (plist-get result :ms)))))
+      (let* ((default (equal scope ema-default-config-key))
+             (own (plist-get (ema-provider-plist name) :model))
+             (stored (ema-config-save
+                      scope name
+                      (and (not (equal (plist-get plist :model) own))
+                           (plist-get plist :model))
+                      overrides)))
+        (cond
+         (stored
+          (force-mode-line-update t)
+          (format "switched %s to %s/%s (test passed in %d ms)%s"
+                  (if default "the default"
+                    (format "this project (%s)" (abbreviate-file-name scope)))
+                  name (plist-get plist :model) (plist-get result :ms)
+                  (let ((source (plist-get (ema-current-config (and (not default) scope))
+                                           :source)))
+                    (cond
+                     ((eq source 'dir-locals)
+                      "; but .dir-locals.el overrides it here, so it has no effect in this project")
+                     ((and default (eq source 'project))
+                      "; this project keeps its own setting")
+                     (t "")))))
+         ;; without the database only the global choice can be kept
+         (default
+          (setf (alist-get name ema-providers) plist)
+          (setq ema-provider name)
+          (ema-save-config)
+          (force-mode-line-update t)
+          (format "switched the default to %s/%s (test passed in %d ms)"
+                  name (plist-get plist :model) (plist-get result :ms)))
+         (t "NOT switched: the history database is off, and a project setting is kept there"))))))
+
+(ema-deftool ema-provider-switch (name &optional model &rest overrides)
+  "Test provider NAME with MODEL and OVERRIDES; switch to it when the test passes.
+In a project the switch is for that project only; outside one it is for
+the default, which every project without its own setting uses.  The
+reply says which one it was, and when .dir-locals.el overrides it.  On
+a failed test nothing changes and the reason comes back.  On success
+the configuration is stored, and the conversation continues on the new
+model from the next call on."
+  (ema--switch name model overrides
+               (or (ema--project-root) ema-default-config-key)))
 
 (defun ema--annotated-read (prompt rows)
   "Read one of ROWS ((LABEL . NOTE)...) with NOTE as its annotation."
@@ -230,10 +268,8 @@ result of `ema-provider-switch', or \"declined\"."
       (message "ema: testing %s…" pick)
       (ema-provider-switch (nth 0 option) (nth 1 option)))))
 
-;;;###autoload
-(defun ema-switch-provider ()
-  "Pick a provider and a model, test them, and switch when the test passes."
-  (interactive)
+(defun ema--read-switch ()
+  "Read a provider and a model in the minibuffer; return (NAME MODEL)."
   (let* ((name (intern
                 (ema--annotated-read
                  "Provider: "
@@ -243,14 +279,32 @@ result of `ema-provider-switch', or \"declined\"."
                                          (if (ema--has-key-p (cdr cell))
                                              "" "(key missing)"))))
                          ema-providers))))
-         (current (plist-get (ema-provider-plist name) :model))
+         (current (if (eq name (ema-current-provider))
+                      (plist-get (ema-current-config) :model)
+                    (plist-get (ema-provider-plist name) :model)))
          (models (progn (message "ema: reading the model list…")
                         (condition-case nil (ema-provider-models name)
                           (error nil))))
          (model (completing-read (format "Model (default %s): " current)
                                  models nil nil nil nil current)))
     (message "ema: testing %s/%s…" name model)
-    (message "ema: %s" (ema-provider-switch name model))))
+    (list name model)))
+
+;;;###autoload
+(defun ema-switch-provider ()
+  "Pick a provider and a model, test them, and switch when the test passes.
+In a project the switch is for that project; outside one it is for the
+default.  The message says which.  `ema-switch-default-provider' always
+sets the default."
+  (interactive)
+  (message "ema: %s" (apply #'ema-provider-switch (ema--read-switch))))
+
+;;;###autoload
+(defun ema-switch-default-provider ()
+  "Pick the default provider and model, which projects without their own use."
+  (interactive)
+  (pcase-let ((`(,name ,model) (ema--read-switch)))
+    (message "ema: %s" (ema--switch name model nil ema-default-config-key))))
 
 ;;;; What the agent is told about itself
 

@@ -339,9 +339,18 @@ changes.  Everything above the prompt is read-only."
           ((< n 999500) (scaled (/ n 1000.0) "K"))
           (t (scaled (/ n 1000000.0) "M")))))
 
+(defun ema--config-label ()
+  "Return PROVIDER/MODEL in use, with where it was set unless it is the default."
+  (let ((c (ema-current-config)))
+    (format "%s/%s%s" (plist-get c :provider) (plist-get c :model)
+            (pcase (plist-get c :source)
+              ('dir-locals " [.dir-locals.el]")
+              ('project " [project]")
+              (_ "")))))
+
 (defun ema--model-id ()
   "The provider and model in use, for the mode line after the buffer name."
-  (format "  %s/%s" ema-provider (plist-get (ema-provider-plist) :model)))
+  (concat "  " (ema--config-label)))
 
 (defun ema--header ()
   (format " %s↑%s ⚡%s  out %s (%s/s)%s"

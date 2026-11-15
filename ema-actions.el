@@ -325,8 +325,7 @@ the command in other places to send several references in one message."
 (declare-function transient-setup "transient")
 
 (defun ema--menu-title ()
-  (let ((p (ema-provider-plist)))
-    (format "ema · %s/%s" ema-provider (plist-get p :model))))
+  (format "ema · %s" (ema--config-label)))
 
 ;;;###autoload
 (defun ema-menu ()

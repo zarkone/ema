@@ -191,14 +191,15 @@ The directory is not a project, so the chat is \"*ema*\"."
                   nil)))
        ;; a failed test changes nothing
        (should (string-prefix-p "NOT switched" (ema-provider-switch 'openai "bad")))
-       (should (eq ema-provider 'anthropic))
+       (should (eq (ema-current-provider) 'anthropic))
        (should-not (equal (plist-get (ema-provider-plist 'openai) :model) "bad"))
        ;; a test alone never switches
        (should (plist-get (ema-provider-test 'openai "good") :ok))
-       (should (eq ema-provider 'anthropic))
-       ;; a passed test switches and saves
-       (should (string-prefix-p "switched" (ema-provider-switch 'openai "good" :effort "low")))
-       (should (eq ema-provider 'openai))
+       (should (eq (ema-current-provider) 'anthropic))
+       ;; a passed test switches and saves (outside a project: the default)
+       (should (string-match-p "^switched the default to openai/good"
+                               (ema-provider-switch 'openai "good" :effort "low")))
+       (should (eq (ema-current-provider) 'openai))
        (should (equal seen '("good" "good" "bad")))
        ;; the user's pick from a proposal goes through the same path
        (cl-letf (((symbol-function 'ema--annotated-read)
@@ -206,14 +207,56 @@ The directory is not a project, so the chat is \"*ema*\"."
          (should (string-prefix-p
                   "NOT switched"
                   (ema-provider-propose '((anthropic "good" "a") (anthropic "bad" "b"))))))
-       (should (eq ema-provider 'openai))
-       ;; the saved configuration comes back
+       (should (eq (ema-current-provider) 'openai))
+       ;; the stored configuration comes back from the database
+       (ema-history-close)
+       (ema-config-flush)
        (setq ema-provider 'anthropic)
-       (setf (alist-get 'openai ema-providers) nil)
-       (ema-load-config)
-       (should (eq ema-provider 'openai))
-       (should (equal (plist-get (ema-provider-plist 'openai) :effort) "low"))
+       (should (eq (ema-current-provider) 'openai))
+       (should (equal (plist-get (ema-provider-plist) :effort) "low"))
+       (should (equal (plist-get (ema-provider-plist) :model) "good"))
        (should (string-match-p "^\\* openai  model good" (ema-providers-list)))))))
+
+(ert-deftest ema-config-resolves-per-project ()
+  (ema-tests--with-chat
+   (let* ((ema-providers (copy-tree ema-providers))
+          (ema-provider 'anthropic)
+          (root (file-name-as-directory (make-temp-file "ema-proj" t)))
+          (other (file-name-as-directory (make-temp-file "ema-other" t))))
+     (unwind-protect
+         (cl-flet ((cfg (&optional r) (ema-current-config (or r root))))
+           (should (eq (plist-get (cfg) :source) 'variable))
+           ;; the default row
+           (should (ema-config-save ema-default-config-key 'openai "m-default" nil))
+           (should (eq (plist-get (cfg) :source) 'default))
+           (should (equal (plist-get (cfg) :model) "m-default"))
+           ;; the project's own row wins; another project keeps the default
+           (ema-config-save root 'openrouter "m-proj" '(:effort "low"))
+           (should (eq (plist-get (cfg) :provider) 'openrouter))
+           (should (eq (plist-get (cfg) :source) 'project))
+           (should (equal (plist-get (cfg) :model) "m-proj"))
+           (should (equal (plist-get (plist-get (cfg) :plist) :effort) "low"))
+           (should (eq (plist-get (cfg other) :provider) 'openai))
+           ;; .dir-locals.el wins over both
+           (with-temp-file (expand-file-name ".dir-locals.el" root)
+             (insert "((nil . ((ema-provider . anthropic))))"))
+           (ema-config-flush)
+           (should (eq (plist-get (cfg) :provider) 'anthropic))
+           (should (eq (plist-get (cfg) :source) 'dir-locals))
+           (should (equal (plist-get (cfg) :model)
+                          (plist-get (alist-get 'anthropic ema-providers) :model)))
+           ;; a switch for that project says it has no effect
+           (cl-letf (((symbol-function 'ema--probe) (lambda (&rest _) '(:ok t :ms 1))))
+             (should (string-match-p "overrides it here"
+                                     (ema--switch 'openai nil nil root))))
+           ;; a name that is not a provider is ignored
+           (with-temp-file (expand-file-name ".dir-locals.el" root)
+             (insert "((nil . ((ema-provider . no-such-provider))))"))
+           (ema-config-flush)
+           (should (eq (plist-get (cfg) :provider) 'openai))
+           (should (eq (plist-get (cfg) :source) 'project)))
+       (delete-directory root t)
+       (delete-directory other t)))))
 
 (ert-deftest ema-context-region-defun-line ()
   (with-temp-buffer

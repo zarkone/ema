@@ -197,7 +197,7 @@ compiles and runs the tests in a separate Emacs (`ema-self-check`).
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `ema-provider` | `anthropic` | The provider in use; change it with `ema-switch-provider` |
+| `ema-provider` | `anthropic` | The fallback provider. The one in use is stored per project (`ema-switch-provider`) and as the default (`ema-switch-default-provider`), in the `project_config` table; `.dir-locals.el` may set `ema-provider` and `ema-model` and wins over both. The mode line marks `[project]` or `[.dir-locals.el]` |
 | `ema-secret-store-file` | nil: the first `.gpg` file in `auth-sources` | Where `ema-secret-set` saves a key |
 | `ema-max-turns` | 40 | Model calls for one message before ema stops and asks |
 | `ema-context-high`, `ema-context-low` | 120000, 60000 | The window, in input tokens |

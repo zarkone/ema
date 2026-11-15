@@ -18,6 +18,15 @@ one in use. To change the model or its configuration, never set
 A switch takes effect at your next model call, so report the result in
 the same turn.
 
+The choice is per project: in a project `ema-provider-switch` stores it
+for that project only, outside one it stores the default (the row
+"default" in `project_config`) that every project without its own
+setting uses. The reply says which, and when the project's
+.dir-locals.el sets `ema-provider` or `ema-model` it wins, so the switch
+has no effect there: tell the user. `(ema-current-config)` returns what
+is in use and its :source (`dir-locals`, `project`, `default`,
+`variable`).
+
 Secrets are names (`llm.key.x`), kept in the user's auth-source file:
 never read, print or ask for a key's value, and never open or decrypt
 that file. When a key is missing, `(ema-secret-ask "NAME")` lets the

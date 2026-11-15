@@ -105,15 +105,124 @@ the wire format), :url, :model, :key (a name for `ema-secret'; nil for
 a keyless local server), :effort (Anthropic only), :max-tokens.")
 
 (defvar ema-provider 'anthropic
-  "The provider in use, a key of `ema-providers'.")
+  "The fallback provider, a key of `ema-providers'.
+The provider in use is resolved per project by `ema-current-config':
+.dir-locals.el, then the project's stored row, then the default row,
+then this variable.  Set it in .dir-locals.el to choose for a project.")
+
+(defvar ema-model nil
+  "Model override for the provider in use; nil means the provider's own.
+Meant for .dir-locals.el, next to `ema-provider'.")
+
+(defconst ema-default-config-key "default"
+  "The key of the global row among the stored configurations.
+A project's key is its absolute root path, so the two never collide.")
+
+(defvar ema-config-store-function nil
+  "Function of one argument KEY that returns a stored configuration, or nil.
+KEY is a project root or `ema-default-config-key'.  The result is a
+plist (:provider SYMBOL :model STRING-OR-NIL :options PLIST).
+ema-history.el sets it to read the database.")
 
 (defvar ema-request-timeout 600
   "Seconds before a model request is abandoned.")
 
+(defvar ema-directory)
+(declare-function ema--project-root "ema")
+
+(defvar ema--config-cache nil
+  "Alist ((ROOT DIRECTORY PROVIDER) . (TIME . CHOICE)) of resolved choices.
+The mode line asks on every redisplay; this keeps it from reading the
+database and .dir-locals.el each time.")
+
+(defconst ema--config-cache-seconds 5
+  "How long a resolved choice is kept; an edit of .dir-locals.el shows up then.")
+
+(defun ema-config-flush ()
+  "Forget the resolved choices, after a change of a stored configuration."
+  (setq ema--config-cache nil))
+
+(defun ema--dir-local-values (root)
+  "Return the ema variables that .dir-locals.el sets for ROOT, as an alist.
+Nothing is applied: the values are only read, and the caller checks them."
+  (when (and root enable-local-variables)
+    (with-temp-buffer
+      (setq default-directory (file-name-as-directory root))
+      (let ((enable-local-variables :all))
+        (ignore-errors (hack-dir-local-variables)))
+      (seq-filter (lambda (c) (memq (car c) '(ema-provider ema-model)))
+                  dir-local-variables-alist))))
+
+(defun ema--stored-config (key)
+  "Return the stored configuration for KEY when its provider still exists."
+  (when (and key ema-config-store-function)
+    (let ((c (ignore-errors (funcall ema-config-store-function key))))
+      (and c (alist-get (plist-get c :provider) ema-providers) c))))
+
+(defun ema--config-choice (root)
+  "Return (:provider :model :options :source) for project ROOT, uncached."
+  (let* ((dl (ema--dir-local-values root))
+         (dl-provider (let ((p (alist-get 'ema-provider dl)))
+                        (and p (alist-get p ema-providers) p)))
+         (dl-model (alist-get 'ema-model dl))
+         (project (and root (ema--stored-config root)))
+         (default (ema--stored-config ema-default-config-key))
+         (base (or project default))
+         (provider (or dl-provider (plist-get base :provider) ema-provider))
+         ;; a stored model and options belong to the stored provider only
+         (same (eq provider (plist-get base :provider))))
+    (list :provider provider
+          :model (or (and (stringp dl-model) dl-model)
+                     (and same (plist-get base :model)))
+          :options (and same (plist-get base :options))
+          :source (cond ((or dl-provider dl-model) 'dir-locals)
+                        (project 'project)
+                        (default 'default)
+                        (t 'variable)))))
+
+(defun ema-current-config (&optional root)
+  "Return the provider configuration in use for project ROOT.
+ROOT defaults to the project of the current buffer.  The order, most
+specific first: .dir-locals.el (`ema-provider', `ema-model'), the row of
+the project, the default row, the variable `ema-provider'.  A plist:
+:provider, :model (the model that will be used), :options (overrides
+such as :effort), :plist (the provider's plist with both applied, ready
+for a request) and :source (`dir-locals', `project', `default' or
+`variable')."
+  (let* ((root (or root (and (fboundp 'ema--project-root) (ema--project-root))))
+         (key (list root (bound-and-true-p ema-directory) ema-provider))
+         (hit (assoc key ema--config-cache))
+         (choice (if (and hit (< (- (float-time) (cadr hit))
+                                 ema--config-cache-seconds))
+                     (cddr hit)
+                   (let ((c (ema--config-choice root)))
+                     (setf (alist-get key ema--config-cache nil nil #'equal)
+                           (cons (float-time) c))
+                     c)))
+         (plist (copy-sequence (ema-provider-plist (plist-get choice :provider))))
+         (options (plist-get choice :options)))
+    (when (plist-get choice :model)
+      (setq plist (plist-put plist :model (plist-get choice :model))))
+    (while options
+      (setq plist (plist-put plist (pop options) (pop options))))
+    (list :provider (plist-get choice :provider)
+          :model (plist-get plist :model)
+          :options (plist-get choice :options)
+          :source (plist-get choice :source)
+          :plist plist)))
+
+(defun ema-current-provider ()
+  "Return the name of the provider in use for the current project."
+  (plist-get (ema-current-config) :provider))
+
 (defun ema-provider-plist (&optional name)
-  "Return the plist of provider NAME (default: the current one)."
-  (or (alist-get (or name ema-provider) ema-providers)
-      (error "ema: unknown provider %s" (or name ema-provider))))
+  "Return the plist of provider NAME.
+Without NAME it is the provider in use for the current project, with
+its model and options applied (see `ema-current-config')."
+  (if name
+      (or (alist-get name ema-providers)
+          (error "ema: unknown provider %s" name))
+    (plist-get (ema-current-config) :plist)))
 
 ;;;; JSON
 
