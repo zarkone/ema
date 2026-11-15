@@ -79,7 +79,8 @@ Now the chat opens on the side where =ema-display-action= puts it
 (right by default); the user reads the code on the right and the chat
 on the left is more comfortable.
 
-* TODO Per-project LLM config
+* DONE Per-project LLM config
+CLOSED: [2026-11-15 Sun 01:25]
 Allow each project to choose its own provider/model (e.g. via
 .dir-locals.el or a per-project entry in config.eld) instead of one
 global `ema-provider'.
