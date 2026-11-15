@@ -105,8 +105,18 @@ This was not a bug, but feature :)
 Look at the LLM config.eld: how provider secrets live there, and whether
 they can be referenced from authinfo.gpg instead of being stored in (or
 next to) the config.
-* TODO what is emacs "side window"?
+* DONE what is emacs "side window"?
+CLOSED: [2026-11-15 Sun 01:30]
 ema buffer, it cannot keep only side window when i press
+#+begin_quote
+A side window is a special window docked to a frame edge (left, right, top,
+bottom), outside the normal window tree. It is made with
+`display-buffer-in-side-window'. `delete-other-windows' (C-x 1) leaves side
+windows alone, so C-x 1 neither deletes the chat nor leaves only the chat.
+This is by design. ema uses one in `ema-display-action' (ema.el:50): side left,
+width 0.4, so the chat is not replaced when you open files.
+Use C-x w 1 (`window-toggle-side-windows') to hide or show the chat.
+#+end_quote
 * DONE remove waiting for model, cell
 CLOSED: [2026-11-15 Sun 01:29]
 redundant info in top status of ema
