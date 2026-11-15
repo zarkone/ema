@@ -84,7 +84,9 @@ Allow each project to choose its own provider/model (e.g. via
 .dir-locals.el or a per-project entry in config.eld) instead of one
 global `ema-provider'.
 maybe we can store configs to sqlite, also global and per project
-but redefine/set it via dir locals, hinting it in ui somehow
+but redefine/set it via dir locals, hinting it in ui somehow that it
+was redefined from local project dir-locals.
+
 
 * DONE make ema output readonly
 CLOSED: [2026-11-13 Fri 17:30]
@@ -94,3 +96,11 @@ unclear what exactly: show a link's file in another window, or open the chat/ema
 
 * TODO got region selection after submitting
 after cells eval ends and i got new input invitation, new region appears
+* TODO Review config.eld and how secrets are referenced
+Look at the LLM config.eld: how provider secrets live there, and whether
+they can be referenced from authinfo.gpg instead of being stored in (or
+next to) the config.
+* TODO what is emacs "side window"?
+ema buffer, it cannot keep only side window when i press
+* TODO remove waiting for model, cell
+`

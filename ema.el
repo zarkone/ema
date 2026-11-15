@@ -491,7 +491,11 @@ the history; `ema-resume' brings it back."
         (kill-buffer ema--request)))
     (when ema--busy
       (ema--finish "\n[stopped]\n"))
-    (force-mode-line-update)))
+    (force-mode-line-update))
+  ;; a cell that waits for an answer to a suggestion must end too; last,
+  ;; because this leaves the function
+  (when ema--suggestion-waiting
+    (throw 'ema-suggestion 'decline)))
 
 ;;;; The loop
 

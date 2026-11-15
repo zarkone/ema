@@ -153,19 +153,59 @@ The directory is not a project, so the chat is \"*ema*\"."
     (unwind-protect
         (cl-letf (((symbol-function 'ema--side-window)
                    (lambda (b) (display-buffer b))))
-          (cl-letf (((symbol-function 'y-or-n-p) (lambda (&rest _) nil)))
+          (cl-letf (((symbol-function 'ema--suggestion-wait) (lambda (&rest _) nil)))
             (should (equal (ema-suggest file "beta" "gamma" "test") "declined")))
           (should (equal (with-current-buffer (get-file-buffer file) (buffer-string))
                          "alpha\nbeta\n"))
-          (cl-letf (((symbol-function 'y-or-n-p) (lambda (&rest _) t)))
+          (cl-letf (((symbol-function 'ema--suggestion-wait) (lambda (&rest _) t)))
             (should (string-prefix-p "applied" (ema-suggest file "beta" "gamma"))))
           (should (equal (with-current-buffer (get-file-buffer file) (buffer-string))
                          "alpha\ngamma\n"))
-          (should (string-match-p "^\\+gamma"
-                                  (with-current-buffer "*ema: suggestion*" (buffer-string)))))
+          (with-current-buffer "*ema: suggestion*"
+            (should (string-match-p "^\\+gamma" (buffer-string)))
+            ;; the header names the file, so that diff-mode finds the source
+            (should (string-match-p (format "^--- %s\n\\+\\+\\+ %s$"
+                                            (regexp-quote (file-name-nondirectory file))
+                                            (regexp-quote (file-name-nondirectory file)))
+                                    (buffer-string)))
+            (should (equal (expand-file-name (diff-find-file-name nil t)) file))))
       (with-current-buffer (get-file-buffer file) (set-buffer-modified-p nil))
       (kill-buffer (get-file-buffer file))
       (delete-file file))))
+
+(ert-deftest ema-suggestion-is-answered-without-the-minibuffer ()
+  ;; the commands answer only while a suggestion waits
+  (should-error (ema-suggestion-apply) :type 'user-error)
+  (let ((ema--suggestion-waiting t))
+    (should (eq 'apply (catch 'ema-suggestion (ema-suggestion-apply))))
+    (should (eq 'decline (catch 'ema-suggestion (ema-suggestion-decline)))))
+  (with-temp-buffer
+    (diff-mode)
+    (setq buffer-read-only t)
+    (let ((diff (current-buffer)) (asked nil))
+      (cl-letf (((symbol-function 'recursive-edit)
+                 (lambda ()
+                   (setq asked t)
+                   ;; the keys of the diff buffer answer, ahead of diff-mode's
+                   (should (eq (key-binding "y") 'ema-suggestion-apply))
+                   (should (eq (key-binding "n") 'ema-suggestion-decline))
+                   (should header-line-format)
+                   (call-interactively (key-binding "y")))))
+        (should (ema--suggestion-wait diff "Apply?")))
+      (should asked)
+      ;; after the answer the buffer is a plain diff buffer again
+      (should-not ema-suggestion-mode)
+      (should-not (eq (key-binding "y") 'ema-suggestion-apply))
+      (cl-letf (((symbol-function 'recursive-edit)
+                 (lambda () (call-interactively (key-binding "n")))))
+        (should-not (ema--suggestion-wait diff "Apply?")))
+      ;; a wait that ends without an answer, and a killed buffer: declined
+      (cl-letf (((symbol-function 'recursive-edit) #'ignore))
+        (should-not (ema--suggestion-wait diff "Apply?")))
+      (cl-letf (((symbol-function 'recursive-edit)
+                 (lambda () (let ((kill-buffer-query-functions nil))
+                              (kill-buffer diff)))))
+        (should-not (ema--suggestion-wait diff "Apply?"))))))
 
 (ert-deftest ema-install-asks-first ()
   (cl-letf (((symbol-function 'y-or-n-p) (lambda (&rest _) nil))

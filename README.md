@@ -228,6 +228,8 @@ compiles and runs the tests in a separate Emacs (`ema-self-check`).
 
 ema evaluates arbitrary Emacs Lisp in your session with your
 permissions. There is no sandbox. The prompt tells it to confirm before
-an action that is hard to undo, and installs, agenda changes and
-suggestions ask you in the minibuffer; nothing else enforces that. Use
+an action that is hard to undo. Installs and agenda changes ask you in
+the minibuffer. A suggestion shows a diff and waits for `y` or `n` in
+the diff buffer; you can read other buffers first. Nothing else
+enforces that. Use
 it where you would let a colleague type at your keyboard.

@@ -800,10 +800,103 @@ keys and lists reach it.  The user moves between notes with
   (interactive)
   (ema-next-note t))
 
+;; A suggestion does not ask in the minibuffer.  A minibuffer question
+;; holds the keyboard: the user who goes to read the code first works
+;; with a prompt open behind them, and the next prompt stacks on it.
+;; `ema-suggest' waits in a recursive edit instead: the user moves
+;; freely and answers with a key in the diff buffer, or with M-x from
+;; any buffer.
+
+(defvar ema--suggestion-waiting nil
+  "Non-nil while `ema-suggest' waits for the answer of the user.")
+
+(defun ema--suggestion-answer (answer)
+  (unless ema--suggestion-waiting
+    (user-error "ema does not wait for an answer"))
+  (throw 'ema-suggestion answer))
+
+(defun ema-suggestion-apply ()
+  "Accept the change that ema suggests."
+  (interactive)
+  (ema--suggestion-answer 'apply))
+
+(defun ema-suggestion-decline ()
+  "Decline the change that ema suggests."
+  (interactive)
+  (ema--suggestion-answer 'decline))
+
+(defvar ema-suggestion-mode-map
+  (let ((map (make-sparse-keymap)))
+    (define-key map "y" #'ema-suggestion-apply)
+    (define-key map "n" #'ema-suggestion-decline)
+    (define-key map (kbd "C-c C-c") #'ema-suggestion-apply)
+    (define-key map (kbd "C-c C-k") #'ema-suggestion-decline)
+    map)
+  "Keys of the diff buffer while ema waits for an answer.")
+
+(define-minor-mode ema-suggestion-mode
+  "Answer keys in the buffer that shows a suggestion of ema.
+\\{ema-suggestion-mode-map}"
+  :lighter " ema?"
+  (if ema-suggestion-mode
+      ;; ahead of the keys that `diff-mode' gives a read-only buffer
+      (setq-local minor-mode-overriding-map-alist
+                  (cons (cons 'ema-suggestion-mode ema-suggestion-mode-map)
+                        minor-mode-overriding-map-alist))
+    (setq-local minor-mode-overriding-map-alist
+                (assq-delete-all 'ema-suggestion-mode
+                                 minor-mode-overriding-map-alist))))
+
+(defun ema--suggestion-wait (diff question)
+  "Wait for the answer to QUESTION about the change in buffer DIFF.
+Return non-nil when the user accepts.  The wait is a recursive edit, not
+a minibuffer prompt: the user can read other buffers first.  They answer
+with y or n in DIFF, or with `ema-suggestion-apply' and
+`ema-suggestion-decline' from any buffer.  To kill DIFF is to decline."
+  (let ((ema--suggestion-waiting t)
+        (declined (lambda () (when ema--suggestion-waiting
+                               (throw 'ema-suggestion 'decline))))
+        (keys "y apply, n decline")
+        (origin (selected-window)))
+    (unwind-protect
+        (progn
+          (with-current-buffer diff
+            (ema-suggestion-mode 1)
+            (setq header-line-format
+                  (concat " " (propertize question 'face 'bold) "  " keys))
+            (add-hook 'kill-buffer-hook declined nil t))
+          (when-let* ((win (get-buffer-window diff)))
+            (select-window win))
+          (message "%s  %s (in the diff buffer)" question keys)
+          (eq 'apply (catch 'ema-suggestion (recursive-edit) 'decline)))
+      (when (buffer-live-p diff)
+        (with-current-buffer diff
+          (remove-hook 'kill-buffer-hook declined t)
+          (ema-suggestion-mode -1)
+          (setq header-line-format nil)))
+      (when (window-live-p origin) (select-window origin)))))
+
+(defun ema--suggestion-diff (buf after file diff)
+  "Fill buffer DIFF with the diff from BUF to AFTER, named as FILE.
+The header names FILE, so that the `diff-mode' commands that go to the
+source find it and do not ask for a file."
+  (diff-no-select buf after "-u" t diff)
+  (with-current-buffer diff
+    (setq default-directory (file-name-directory (expand-file-name file)))
+    (let ((inhibit-read-only t)
+          (name (file-name-nondirectory file)))
+      (save-excursion
+        (goto-char (point-min))
+        (when (re-search-forward "^--- .*$" nil t)
+          (replace-match (concat "--- " name) t t))
+        (when (re-search-forward "^\\+\\+\\+ .*$" nil t)
+          (replace-match (concat "+++ " name) t t))))))
+
 (ema-deftool ema-suggest (file old new &optional why)
   "Propose to replace OLD with NEW in FILE; the user accepts or declines.
-The change is shown as a diff beside the chat with the reason WHY, and
-the user answers in the minibuffer.  Returns \"applied\" or \"declined\".
+The change is shown as a diff beside the chat with the reason WHY.  The
+call waits until the user answers with a key in the diff buffer; they
+can read other buffers first.  Returns \"applied\" or \"declined\".
 This is the default way to change the user's code: they stay the
 author.  OLD must occur exactly once (see `ema-edit')."
   (let* ((buf (find-file-noselect file))
@@ -820,10 +913,12 @@ author.  OLD must occur exactly once (see `ema-edit')."
                      (how-many (regexp-quote old)) file))
             (search-forward old)
             (replace-match new t t))
-          (diff-no-select buf after "-u" t diff)
+          (ema--suggestion-diff buf after file diff)
           (ema--side-window diff)
-          (if (y-or-n-p (format "ema suggests%s. Apply? "
-                                (if why (concat ": " (string-trim-right why "[. ]+")) " a change")))
+          (if (ema--suggestion-wait
+               diff (format "ema suggests%s. Apply?"
+                            (if why (concat ": " (string-trim-right why "[. ]+"))
+                              " a change")))
               (progn (ema-edit file old new) "applied (not saved)")
             "declined"))
       (kill-buffer after))))
