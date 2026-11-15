@@ -88,20 +88,25 @@ maybe we can store configs to sqlite, also global and per project
 but redefine/set it via dir locals, hinting it in ui somehow that it
 was redefined from local project dir-locals.
 
-
 * DONE make ema output readonly
 CLOSED: [2026-11-13 Fri 17:30]
 
-* TODO support C-o in ema output to open in another buffer
+* CANCELLED support C-o in ema output to open in another buffer
+CLOSED: [2026-11-15 Sun 01:26]
 unclear what exactly: show a link's file in another window, or open the chat/ema buffers in another window
 
-* TODO got region selection after submitting
-after cells eval ends and i got new input invitation, new region appears
+* CANCELLED got region selection after submitting
+CLOSED: [2026-11-15 Sun 01:26]
+after cells eval ends and i got new input invitation, new region
+appears.
+This was not a bug, but feature :)
+
 * TODO Review config.eld and how secrets are referenced
 Look at the LLM config.eld: how provider secrets live there, and whether
 they can be referenced from authinfo.gpg instead of being stored in (or
 next to) the config.
 * TODO what is emacs "side window"?
 ema buffer, it cannot keep only side window when i press
-* TODO remove waiting for model, cell
-`
+* DONE remove waiting for model, cell
+CLOSED: [2026-11-15 Sun 01:29]
+redundant info in top status of ema

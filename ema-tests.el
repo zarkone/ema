@@ -422,8 +422,12 @@ The directory is not a project, so the chat is \"*ema*\"."
                               :stop "end_turn" :usage '(:in 10 :cached 0 :out 100))))
        (should (= 10 ema--speed))
        (should (string-match-p "out 100 (10/s)" (ema--header)))
-       (let ((ema--busy t))
-         (should (string-match-p "· 10 tok/s" (ema--activity))))
+       ;; the activity is only a status text a tool set, never a fixed phrase
+       (let ((ema--busy t) (ema-status-text nil))
+         (should-not (ema--activity))
+         (should (string-match-p "⠋\\|⠙\\|⠹\\|⠸\\|⠼\\|⠴\\|⠦\\|⠧\\|⠇\\|⠏" (ema--header))))
+       (let ((ema--busy t) (ema-status-text "reading"))
+         (should (equal (ema--activity) "reading")))
        ;; a call too fast to trust the clock: the last speed stays
        (let ((ema--call-start (- (float-time) 0.1)))
          (ema--on-reply (list :content [(:type "text" :text "hi")]

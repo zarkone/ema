@@ -142,8 +142,8 @@ root, so `M-n` in `C-x C-f` and `embark-act` also find a path at point.
 
 ### While a turn runs
 
-- The chat header and the mode line show a spinner and the activity:
-  `ema[myproject] ⠹ waiting for the model, call 2`.
+- The chat header and the mode line show a spinner, and the status text
+  a tool set with `ema-status`.
 - The end of the chat shows the last cells of the turn, one line each,
   as links into the log.
 - After the turn, the cells become one line (`▸ 7 cells, #1–#7`). The

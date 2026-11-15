@@ -316,13 +316,8 @@ changes.  Everything above the prompt is read-only."
   (force-mode-line-update t))
 
 (defun ema--activity ()
-  "Describe what the running turn does now, or return nil when idle."
-  (when ema--busy
-    (or ema-status-text
-        (if (eq ema--phase 'cell)
-            (format "running cell #%d" ema--cell-count)
-          (format "waiting for the model, call %d%s" ema--turns
-                    (if ema--speed (format " · %d tok/s" ema--speed) ""))))))
+  "Return the status text a tool set while the turn runs, or nil."
+  (and ema--busy ema-status-text))
 
 (defun ema--chats ()
   "Return the live chat buffers."
@@ -360,7 +355,8 @@ changes.  Everything above the prompt is read-only."
           (ema--human-number (or (plist-get ema--usage :out) 0))
           (if ema--speed (format "%d" ema--speed) "?")
           (if ema--busy
-              (format "  ·  %s %s  (C-c C-k stops)" (ema--spinner) (ema--activity))
+              (format "  ·  %s%s  (C-c C-k stops)" (ema--spinner)
+                      (if-let* ((a (ema--activity))) (concat " " a) ""))
             "")))
 
 (defun ema--reset ()
