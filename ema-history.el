@@ -12,11 +12,22 @@
 ;; There is no archive step: old rows stay in the database, and what the
 ;; model sees is decided by the window in ema.el.  A failure of the
 ;; database never stops a turn.
+;;
+;; The file, top to bottom:
+;;
+;;   The database         the schema, open and close, `ema--with-history'
+;;   Write, Read          what the chat records and loads (ema.el calls
+;;                        these `ema--history-…' functions)
+;;   Stored provider configurations   the rows behind `ema-current-config'
+;;   Which tools the prompt lists in full
+;;   History, Memory      the tools of the agent
 
 ;;; Code:
 
 (require 'ema-llm)
 (require 'ema-tools)
+
+;;;; The database
 
 (defcustom ema-history-enabled t
   "Non-nil records conversations in the history database."
@@ -85,10 +96,12 @@
 (defvar ema-source-directory)
 
 (defvar ema--history-db nil "The open database: (FILE . HANDLE).")
-(defvar ema--history-warned nil)
+(defvar ema--history-warned nil
+  "Non-nil after the one message that says the history is not recorded.")
 
 (defun ema--history-file ()
-  (expand-file-name "history.sqlite" ema-directory))
+  "Return the path of the history database."
+  (ema--state-file "history.sqlite"))
 
 (defun ema-history-close ()
   "Close the history database."
@@ -120,40 +133,30 @@
         (message "ema: history is not recorded: %s" (error-message-string err)))
       nil)))
 
+(defun ema--history-or-error ()
+  "Return the open history database, or signal an error when history is off.
+The tools of the agent use it: an error tells the model why nothing came
+back.  What the chat records goes through `ema--with-history'."
+  (or (ema--history) (error "The history database is off")))
+
+(defun ema--last-id (db)
+  "Return the id of the row that the last insert into DB made."
+  (caar (sqlite-select db "select last_insert_rowid()")))
+
+(defun ema--project-clause (project &optional column)
+  "Return (SQL . ARGUMENTS) that selects the rows of PROJECT.
+PROJECT is a project root, or nil for the rows without a project.
+COLUMN is the name of the project column (default \"project\")."
+  (let ((column (or column "project")))
+    (if project
+        (cons (concat column " = ?") (list project))
+      (cons (concat column " is null") nil))))
+
 (defun ema--json-text (obj)
   "Serialize OBJ to JSON as a multibyte string."
   (decode-coding-string (ema--json-encode obj) 'utf-8))
 
-;;;; Stored provider configurations (see `ema-current-config')
-
-(defun ema--config-row (key)
-  "Return the stored configuration of KEY, or nil.
-KEY is a project root or `ema-default-config-key'.  The result is a plist
-\(:provider SYMBOL :model STRING-OR-NIL :options PLIST)."
-  (ema--with-history db
-    (when-let* ((r (car (sqlite-select
-                         db "select provider, model, options from project_config
-                             where project = ?"
-                         (list key)))))
-      (list :provider (intern (nth 0 r))
-            :model (and (stringp (nth 1 r)) (nth 1 r))
-            :options (and (stringp (nth 2 r)) (ema--json-parse (nth 2 r)))))))
-
-(defun ema-config-save (key provider model options)
-  "Store PROVIDER, MODEL and OPTIONS for KEY; return non-nil when written.
-KEY is a project root or `ema-default-config-key'.  MODEL may be nil (the
-provider's own); OPTIONS is a plist of overrides such as :effort."
-  (prog1 (ema--with-history db
-           (sqlite-execute
-            db "insert or replace into project_config
-                  (project, provider, model, options, updated)
-                values (?, ?, ?, ?, ?)"
-            (list key (symbol-name provider) model
-                  (and options (ema--json-text options)) (float-time)))
-           t)
-    (ema-config-flush)))
-
-(setq ema-config-store-function #'ema--config-row)
+;;;; Write
 
 (defun ema--blocks-text (content)
   "Return the plain text of the blocks in CONTENT, for the search index."
@@ -163,9 +166,8 @@ provider's own); OPTIONS is a plist of overrides such as :effort."
                  (_ "")))
              content "\n"))
 
-;;;; Write
-
 (defun ema--source-commit ()
+  "Return the short git commit of ema's own source, or nil."
   (ignore-errors
     (let ((default-directory ema-source-directory))
       (with-temp-buffer
@@ -185,7 +187,7 @@ provider's own); OPTIONS is a plist of overrides such as :effort."
            values (?, ?, ?, ?, ?, ?, ?, ?)"
        (list project now now title (symbol-name (ema-current-provider))
              (plist-get p :model) (ema--source-commit) hash))
-      (caar (sqlite-select db "select last_insert_rowid()")))))
+      (ema--last-id db))))
 
 (defun ema--history-message (conversation seq role content &optional request)
   "Record message SEQ of CONVERSATION."
@@ -227,6 +229,7 @@ provider's own); OPTIONS is a plist of overrides such as :effort."
      (list (concat code "\n" result) "cell" conversation n))))
 
 (defun ema--history-set-window (conversation start)
+  "Record that the window of CONVERSATION starts at message START."
   (ema--with-history db
     (sqlite-execute db "update conversations set window_start = ? where id = ?"
                     (list start conversation))))
@@ -236,13 +239,13 @@ provider's own); OPTIONS is a plist of overrides such as :effort."
 (defun ema--history-conversations (project &optional limit)
   "Return the conversations of PROJECT, newest first: (ID UPDATED TITLE MESSAGES)."
   (ema--with-history db
-    (sqlite-select
-     db (concat "select c.id, c.updated, coalesce(c.title, ''),
-                   (select count(*) from messages m where m.conversation = c.id)
-                 from conversations c where "
-                (if project "c.project = ?" "c.project is null")
-                " order by c.updated desc limit ?")
-     (append (and project (list project)) (list (or limit 200))))))
+    (pcase-let ((`(,where . ,args) (ema--project-clause project "c.project")))
+      (sqlite-select
+       db (concat "select c.id, c.updated, coalesce(c.title, ''),
+                     (select count(*) from messages m where m.conversation = c.id)
+                   from conversations c where " where
+                  " order by c.updated desc limit ?")
+       (append args (list (or limit 200)))))))
 
 (defun ema--history-load (conversation)
   "Return the stored state of CONVERSATION as a plist.
@@ -277,9 +280,70 @@ The keys are :messages, :requests ((SEQ . TEXT)…), :window-start and
     (sqlite-execute db "delete from conversations where id = ?" (list conversation))
     t))
 
-;;;; History: earlier conversations
+;;;; Stored provider configurations (see `ema-current-config')
 
-(defvar ema--current-chat)
+(defun ema--config-row (key)
+  "Return the stored configuration of KEY, or nil.
+KEY is a project root or `ema-default-config-key'.  The result is a plist
+\(:provider SYMBOL :model STRING-OR-NIL :options PLIST)."
+  (ema--with-history db
+    (when-let* ((r (car (sqlite-select
+                         db "select provider, model, options from project_config
+                             where project = ?"
+                         (list key)))))
+      (list :provider (intern (nth 0 r))
+            :model (and (stringp (nth 1 r)) (nth 1 r))
+            :options (and (stringp (nth 2 r)) (ema--json-parse (nth 2 r)))))))
+
+(defun ema-config-save (key provider model options)
+  "Store PROVIDER, MODEL and OPTIONS for KEY; return non-nil when written.
+KEY is a project root or `ema-default-config-key'.  MODEL may be nil (the
+provider's own); OPTIONS is a plist of overrides such as :effort."
+  (prog1 (ema--with-history db
+           (sqlite-execute
+            db "insert or replace into project_config
+                  (project, provider, model, options, updated)
+                values (?, ?, ?, ?, ?)"
+            (list key (symbol-name provider) model
+                  (and options (ema--json-text options)) (float-time)))
+           t)
+    (ema-config-flush)))
+
+(setq ema-config-store-function #'ema--config-row)
+
+;;;; Which tools the prompt lists in full
+
+(defun ema--tool-uses (&optional limit)
+  "Return an alist (TOOL . CELLS): how many recorded cells call each tool.
+Only the latest LIMIT cells count (default 2000)."
+  (ema--with-history db
+    (let ((counts nil))
+      (dolist (row (sqlite-select
+                    db "select code from cells order by id desc limit ?"
+                    (list (or limit 2000))))
+        (let ((code (car row)) (start 0) (seen nil))
+          (while (string-match
+                  "\\(?:\\`\\|[^-a-z0-9]\\)\\(ema-[a-z0-9-]*[a-z0-9]\\)" code start)
+            (setq start (match-end 1))
+            (let ((sym (intern-soft (match-string 1 code))))
+              (when (and sym (memq sym ema-tools) (not (memq sym seen)))
+                (push sym seen)
+                (cl-incf (alist-get sym counts 0)))))))
+      counts)))
+
+(defun ema-tools-daily ()
+  "Return the tools that get a full line in the prompt.
+These are `ema-doc', then the tools that the history shows as much used
+\(`ema-tools-daily-min-uses'), then `ema-tools-daily-seed'; at most
+`ema-tools-daily-count' in all."
+  (let* ((used (seq-filter (lambda (c) (>= (cdr c) ema-tools-daily-min-uses))
+                           (ema--tool-uses)))
+         (ranked (mapcar #'car (sort used (lambda (a b) (> (cdr a) (cdr b)))))))
+    (seq-take (seq-filter (lambda (sym) (memq sym ema-tools))
+                          (seq-uniq (append '(ema-doc) ranked ema-tools-daily-seed)))
+              ema-tools-daily-count)))
+
+;;;; History: earlier conversations
 
 (ema-deftool ema-conversation ()
   "Return (:id N :project ROOT) of the conversation you are in.
@@ -298,7 +362,7 @@ of this conversation; with ALL-PROJECTS non-nil, every project.  A line
 is \"conversation ID · date · kind ref | snippet\": kind is request,
 assistant or cell; ref is the message seq or the cell number.  Read
 more with `ema-history-sql'.  LIMIT defaults to 20."
-  (let* ((db (or (ema--history) (error "The history database is off")))
+  (let* ((db (ema--history-or-error))
          (project (plist-get (ema-conversation) :project))
          (match (mapconcat (lambda (w) (format "\"%s\"" (string-replace "\"" "\"\"" w)))
                            (split-string words nil t) " "))
@@ -341,45 +405,13 @@ words on a request message and null elsewhere.  cells.status is done or
 error.  At most LIMIT rows come back (default 200).
 Example: select n, status, ms, substr(code, 1, 80) from cells
          where conversation = 12 order by n"
-  (let ((db (or (ema--history) (error "The history database is off"))))
+  (let ((db (ema--history-or-error)))
     (unless (string-match-p "\\`[ \t\n]*\\(?:select\\|with\\)\\b" (downcase sql))
       (error "Only SELECT statements run here"))
     (sqlite-execute db "pragma query_only = 1")
     (unwind-protect
         (seq-take (sqlite-select db sql) (or limit 200))
       (sqlite-execute db "pragma query_only = 0"))))
-
-;;; Which tools the prompt lists in full
-
-(defun ema--tool-uses (&optional limit)
-  "Return an alist (TOOL . CELLS): how many recorded cells call each tool.
-Only the latest LIMIT cells count (default 2000)."
-  (ema--with-history db
-    (let ((counts nil))
-      (dolist (row (sqlite-select
-                    db "select code from cells order by id desc limit ?"
-                    (list (or limit 2000))))
-        (let ((code (car row)) (start 0) (seen nil))
-          (while (string-match
-                  "\\(?:\\`\\|[^-a-z0-9]\\)\\(ema-[a-z0-9-]*[a-z0-9]\\)" code start)
-            (setq start (match-end 1))
-            (let ((sym (intern-soft (match-string 1 code))))
-              (when (and sym (memq sym ema-tools) (not (memq sym seen)))
-                (push sym seen)
-                (cl-incf (alist-get sym counts 0)))))))
-      counts)))
-
-(defun ema-tools-daily ()
-  "Return the tools that get a full line in the prompt.
-These are `ema-doc', then the tools that the history shows as much used
-\(`ema-tools-daily-min-uses'), then `ema-tools-daily-seed'; at most
-`ema-tools-daily-count' in all."
-  (let* ((used (seq-filter (lambda (c) (>= (cdr c) ema-tools-daily-min-uses))
-                           (ema--tool-uses)))
-         (ranked (mapcar #'car (sort used (lambda (a b) (> (cdr a) (cdr b)))))))
-    (seq-take (seq-filter (lambda (sym) (memq sym ema-tools))
-                          (seq-uniq (append '(ema-doc) ranked ema-tools-daily-seed)))
-              ema-tools-daily-count)))
 
 ;;;; Memory: short facts, global or for one project
 
@@ -389,17 +421,17 @@ These are `ema-doc', then the tools that the history shows as much used
 
 (defun ema--memory-rows (db project limit)
   "Return (ID TITLE) of the newest LIMIT memories of PROJECT (nil: global)."
-  (sqlite-select
-   db (concat "select id, title from memories where "
-              (if project "project = ?" "project is null")
-              " order by updated desc limit ?")
-   (append (and project (list project)) (list limit))))
+  (pcase-let ((`(,where . ,args) (ema--project-clause project)))
+    (sqlite-select
+     db (concat "select id, title from memories where " where
+                " order by updated desc limit ?")
+     (append args (list limit)))))
 
 (defun ema--memory-count (db project)
-  (caar (sqlite-select
-         db (concat "select count(*) from memories where "
-                    (if project "project = ?" "project is null"))
-         (and project (list project)))))
+  "Return how many memories PROJECT has (nil: the global ones)."
+  (pcase-let ((`(,where . ,args) (ema--project-clause project)))
+    (caar (sqlite-select
+           db (concat "select count(*) from memories where " where) args))))
 
 (defun ema-memory-section (project)
   "Return the prompt section that lists the memories for PROJECT."
@@ -408,29 +440,35 @@ These are `ema-doc', then the tools that the history shows as much used
      (let* ((global (ema--memory-rows db nil (car ema-memory-window)))
             (local (and project (ema--memory-rows db project (cdr ema-memory-window))))
             (more-global (- (ema--memory-count db nil) (length global)))
-            (more-local (if project (- (ema--memory-count db project) (length local)) 0))
-            (lines (lambda (rows)
-                     (mapconcat (lambda (r) (format "- #%d %s" (nth 0 r) (nth 1 r)))
-                                rows "\n"))))
+            (more-local (if project (- (ema--memory-count db project) (length local)) 0)))
        (concat
         "\n## Memory\n\n"
         "Titles of the facts you saved in earlier conversations. "
         "Read a body with `(ema-memory ID)` when a title fits the task.\n"
-        (if global (concat "\nGlobal:\n" (funcall lines global) "\n") "")
-        (if local (concat "\nThis project:\n" (funcall lines local) "\n") "")
+        (if global (concat "\nGlobal:\n" (ema--memory-lines global) "\n") "")
+        (if local (concat "\nThis project:\n" (ema--memory-lines local) "\n") "")
         (if (or global local) "" "\n(no memories yet)\n")
-        (if (or (> more-global 0) (> more-local 0))
-            (format "\n(%s: find them with `(ema-memory-search \"words\")`)\n"
-                    (string-join
-                     (delq nil (list (and (> more-local 0)
-                                          (format "%d more for this project" more-local))
-                                     (and (> more-global 0)
-                                          (format "%d more global" more-global))))
-                     ", "))
-          ""))))
+        (ema--memory-more-note more-local more-global))))
    ""))
 
+(defun ema--memory-lines (rows)
+  "Return ROWS ((ID TITLE)...) as a list for the prompt, one line each."
+  (mapconcat (lambda (r) (format "- #%d %s" (nth 0 r) (nth 1 r))) rows "\n"))
+
+(defun ema--memory-more-note (more-local more-global)
+  "Return the prompt line on the memories that the prompt does not list.
+MORE-LOCAL and MORE-GLOBAL count them; the line is empty when both are 0."
+  (let ((parts (delq nil (list (and (> more-local 0)
+                                    (format "%d more for this project" more-local))
+                               (and (> more-global 0)
+                                    (format "%d more global" more-global))))))
+    (if parts
+        (format "\n(%s: find them with `(ema-memory-search \"words\")`)\n"
+                (string-join parts ", "))
+      "")))
+
 (defun ema--memory-project ()
+  "Return the project that a new memory belongs to: the one of this conversation."
   (plist-get (ema-conversation) :project))
 
 (ema-deftool ema-memory-save (title &optional body global id)
@@ -443,7 +481,7 @@ preference of the user, a fact about this machine).  With ID, that
 memory is replaced.  Returns \"memory #N saved (scope)\".
 Save: decisions and preferences the user states, facts that took work
 to find.  Do not save what the repository already says."
-  (let ((db (or (ema--history) (error "The history database is off")))
+  (let ((db (ema--history-or-error))
         (project (and (not global) (ema--memory-project)))
         (now (float-time))
         (title (string-trim (or title ""))))
@@ -461,13 +499,13 @@ to find.  Do not save what the repository already says."
       (sqlite-execute
        db "insert into memories (project, title, body, created, updated) values (?, ?, ?, ?, ?)"
        (list project title (or body "") now now))
-      (setq id (caar (sqlite-select db "select last_insert_rowid()"))))
+      (setq id (ema--last-id db)))
     (format "memory #%d saved (%s)" id
             (if project (concat "project " (abbreviate-file-name project)) "global"))))
 
 (ema-deftool ema-memory (id)
   "Return memory ID whole: scope, date, title and body."
-  (let* ((db (or (ema--history) (error "The history database is off")))
+  (let* ((db (ema--history-or-error))
          (row (car (sqlite-select
                     db "select project, date(updated, 'unixepoch', 'localtime'), title, body
                         from memories where id = ?"
@@ -482,7 +520,7 @@ to find.  Do not save what the repository already says."
 The search covers the global memories and the ones of this project.
 Without WORDS, all of them.  A line is \"#ID [scope] title\".  LIMIT
 defaults to 50."
-  (let* ((db (or (ema--history) (error "The history database is off")))
+  (let* ((db (ema--history-or-error))
          (project (ema--memory-project))
          (terms (split-string (or words "") nil t))
          (rows (sqlite-select
@@ -506,7 +544,7 @@ defaults to 50."
 
 (ema-deftool ema-memory-delete (id)
   "Delete memory ID: use it when the fact is wrong or no longer true."
-  (let ((db (or (ema--history) (error "The history database is off"))))
+  (let ((db (ema--history-or-error)))
     (unless (sqlite-select db "select 1 from memories where id = ?" (list id))
       (error "No memory #%s" id))
     (sqlite-execute db "delete from memories where id = ?" (list id))

@@ -9,15 +9,23 @@
 ;; call through an independent adapter instance (`ema-llm-request' with
 ;; an explicit provider plist), and the switch happens only when that
 ;; call returns a working tool call.
+;;
+;; The file, top to bottom:
+;;
+;;   Saved configuration   config.eld: the provider table
+;;   Providers and models  list, test, switch (tools and commands)
+;;   What the agent is told about itself   a section of the prompt
+;;   Secrets               status and entry, never values
+;;   Your own source       files, the check, the reload
 
 ;;; Code:
 
 (require 'ema-llm)
 (require 'ema-tools)
 
-(defvar url-http-end-of-headers)
 (defvar url-http-response-status)
-(declare-function ema--project-root "ema")
+(declare-function ema--project-root "ema-chat")
+(declare-function ema--busy-chat "ema-chat")
 (declare-function ema-config-save "ema-history")
 
 (defvar ema-source-directory
@@ -26,31 +34,24 @@
 
 ;;;; Saved configuration
 
-(defun ema--config-file ()
-  (expand-file-name "config.eld" ema-directory))
+;; config.eld holds the provider table and the fallback provider.  Which
+;; provider a project uses is not here: it is a row in the history
+;; database (see `ema-current-config').
 
 (defun ema-save-config ()
   "Save the provider configurations and the current provider."
-  (make-directory ema-directory t)
-  (with-temp-file (ema--config-file)
-    (let ((print-length nil) (print-level nil))
-      (pp (list :provider ema-provider :providers ema-providers)
-          (current-buffer)))))
+  (ema--write-state "config.eld"
+                    (list :provider ema-provider :providers ema-providers)))
 
 (defun ema-load-config ()
   "Load the saved provider configurations over the defaults."
-  (let ((file (ema--config-file)))
-    (when (file-readable-p file)
-      (condition-case err
-          (let ((cfg (with-temp-buffer
-                       (insert-file-contents file)
-                       (read (current-buffer)))))
-            (dolist (cell (plist-get cfg :providers))
-              (setf (alist-get (car cell) ema-providers) (cdr cell)))
-            (when (alist-get (plist-get cfg :provider) ema-providers)
-              (setq ema-provider (plist-get cfg :provider))))
-        (error (message "ema: config not loaded: %s"
-                        (error-message-string err)))))))
+  (condition-case err
+      (when-let* ((cfg (ema--read-state "config.eld")))
+        (dolist (cell (plist-get cfg :providers))
+          (setf (alist-get (car cell) ema-providers) (cdr cell)))
+        (when (alist-get (plist-get cfg :provider) ema-providers)
+          (setq ema-provider (plist-get cfg :provider))))
+    (error (message "ema: config not loaded: %s" (error-message-string err)))))
 
 ;;;; Providers and models: inspect, test, switch
 
@@ -60,6 +61,7 @@
       (and (ignore-errors (funcall ema-secret-function (plist-get plist :key))) t)))
 
 (defun ema--provider-line (cell)
+  "Return one line on provider CELL, an element of `ema-providers'."
   (let* ((current (eq (car cell) (ema-current-provider)))
          ;; the one in use shows the model and options of this project
          (p (if current (plist-get (ema-current-config) :plist) (cdr cell))))
@@ -81,43 +83,38 @@ is present.  A key's value is never shown, and you must never read one."
 (defun ema--get-json (url headers)
   "GET URL with HEADERS; return the parsed JSON or signal an error."
   (let* ((url-request-method "GET")
-         (url-request-extra-headers
-          (mapcar (lambda (h) (cons (car h) (encode-coding-string (cdr h) 'utf-8)))
-                  headers))
+         (url-request-extra-headers headers)
          (buf (url-retrieve-synchronously (encode-coding-string url 'utf-8) t t 30)))
     (unless buf (error "No answer from %s" url))
     (with-current-buffer buf
       (unwind-protect
-          (let ((json (ignore-errors
-                        (ema--json-parse
-                         (decode-coding-string
-                          (buffer-substring-no-properties
-                           url-http-end-of-headers (point-max))
-                          'utf-8)))))
+          (let ((json (ema--response-json)))
             (if (and url-http-response-status (>= url-http-response-status 400))
                 (error "%s" (ema--error-text json url-http-response-status))
               json))
         (kill-buffer buf)))))
+
+(defun ema--models-url (p)
+  "Return the URL of the models endpoint of provider plist P."
+  (if (eq (plist-get p :api) 'openai)
+      (replace-regexp-in-string "/chat/completions\\'" "/models"
+                                (plist-get p :url))
+    (concat (replace-regexp-in-string "/messages\\'" "/models"
+                                      (plist-get p :url))
+            "?limit=200")))
 
 (ema-deftool ema-provider-models (&optional name)
   "Return the model ids that provider NAME (default: current) offers.
 The list comes from the provider's own models endpoint, so use it
 instead of a model id from memory."
   (let* ((p (ema-provider-plist name))
-         (openai (eq (plist-get p :api) 'openai))
          (json (ema--get-json
-                (if openai
-                    (replace-regexp-in-string "/chat/completions\\'" "/models"
-                                              (plist-get p :url))
-                  (concat (replace-regexp-in-string "/messages\\'" "/models"
-                                                    (plist-get p :url))
-                          "?limit=200"))
+                (ema--models-url p)
                 (seq-remove (lambda (h) (equal (car h) "content-type"))
-                            (if openai (ema--openai-headers p)
-                              (ema--anthropic-headers p))))))
+                            (ema--request-headers p)))))
     (mapcar (lambda (m) (plist-get m :id)) (plist-get json :data))))
 
-;;; Test, then switch
+;;; Test a candidate
 
 (defconst ema--probe-tool
   '(:name "eval" :description "Evaluate Emacs Lisp."
@@ -127,12 +124,10 @@ instead of a model id from memory."
 
 (defun ema--candidate (name &optional model overrides)
   "Return the plist of provider NAME with MODEL and OVERRIDES applied."
-  (let ((p (copy-sequence (ema-provider-plist name))))
-    (when (and model (not (string-empty-p model)))
-      (setq p (plist-put p :model model)))
-    (while overrides
-      (setq p (plist-put p (pop overrides) (pop overrides))))
-    p))
+  (ema--plist-merge (ema-provider-plist name)
+                    (append (and model (not (string-empty-p model))
+                                 (list :model model))
+                            overrides)))
 
 (defun ema--probe (plist &optional timeout)
   "Make one real call with provider PLIST; return (:ok BOOL :detail STRING :ms N).
@@ -185,45 +180,57 @@ is saved but not used: test it, then switch."
   (ema-save-config)
   (ema--provider-line (assq name ema-providers)))
 
+;;; Switch: only after a passed test
+
 (defun ema--switch (name model overrides scope)
   "Test provider NAME with MODEL and OVERRIDES; store it for SCOPE when it passes.
 SCOPE is a project root or `ema-default-config-key'.  Return a message."
   (let* ((plist (ema--candidate name model overrides))
          (result (ema--probe plist)))
-    (if (not (plist-get result :ok))
-        (format "NOT switched: %s/%s failed the test: %s"
-                name (plist-get plist :model) (plist-get result :detail))
-      (let* ((default (equal scope ema-default-config-key))
-             (own (plist-get (ema-provider-plist name) :model))
-             (stored (ema-config-save
-                      scope name
-                      (and (not (equal (plist-get plist :model) own))
-                           (plist-get plist :model))
-                      overrides)))
-        (cond
-         (stored
-          (force-mode-line-update t)
-          (format "switched %s to %s/%s (test passed in %d ms)%s"
-                  (if default "the default"
-                    (format "this project (%s)" (abbreviate-file-name scope)))
-                  name (plist-get plist :model) (plist-get result :ms)
-                  (let ((source (plist-get (ema-current-config (and (not default) scope))
-                                           :source)))
-                    (cond
-                     ((eq source 'dir-locals)
-                      "; but .dir-locals.el overrides it here, so it has no effect in this project")
-                     ((and default (eq source 'project))
-                      "; this project keeps its own setting")
-                     (t "")))))
-         ;; without the database only the global choice can be kept
-         (default
-          (setf (alist-get name ema-providers) plist)
-          (setq ema-provider name)
-          (ema-save-config)
-          (force-mode-line-update t)
-          (format "switched the default to %s/%s (test passed in %d ms)"
-                  name (plist-get plist :model) (plist-get result :ms)))
-         (t "NOT switched: the history database is off, and a project setting is kept there"))))))
+    (if (plist-get result :ok)
+        (ema--store-switch name plist overrides scope (plist-get result :ms))
+      (format "NOT switched: %s/%s failed the test: %s"
+              name (plist-get plist :model) (plist-get result :detail)))))
+
+(defun ema--store-switch (name plist overrides scope ms)
+  "Store the tested provider NAME for SCOPE; return a message.
+PLIST is the plist of the provider with the model and OVERRIDES applied.
+MS is how long the test took."
+  (let* ((default (equal scope ema-default-config-key))
+         (model (plist-get plist :model))
+         (own (plist-get (ema-provider-plist name) :model))
+         ;; a model that is the provider's own is stored as nil
+         (stored (ema-config-save scope name
+                                  (and (not (equal model own)) model)
+                                  overrides)))
+    (cond
+     (stored
+      (force-mode-line-update t)
+      (format "switched %s to %s/%s (test passed in %d ms)%s"
+              (if default "the default"
+                (format "this project (%s)" (abbreviate-file-name scope)))
+              name model ms
+              (ema--switch-caveat scope default)))
+     ;; without the database only the global choice can be kept
+     (default
+      (setf (alist-get name ema-providers) plist)
+      (setq ema-provider name)
+      (ema-save-config)
+      (force-mode-line-update t)
+      (format "switched the default to %s/%s (test passed in %d ms)" name model ms))
+     (t "NOT switched: the history database is off, and a project setting is kept there"))))
+
+(defun ema--switch-caveat (scope default)
+  "Return a note when the switch stored for SCOPE has no effect here, or \"\".
+DEFAULT is non-nil when SCOPE is the default row."
+  (let ((source (plist-get (ema-current-config (and (not default) scope))
+                           :source)))
+    (cond
+     ((eq source 'dir-locals)
+      "; but .dir-locals.el overrides it here, so it has no effect in this project")
+     ((and default (eq source 'project))
+      "; this project keeps its own setting")
+     (t ""))))
 
 (ema-deftool ema-provider-switch (name &optional model &rest overrides)
   "Test provider NAME with MODEL and OVERRIDES; switch to it when the test passes.
@@ -235,14 +242,6 @@ the configuration is stored, and the conversation continues on the new
 model from the next call on."
   (ema--switch name model overrides
                (or (ema--project-root) ema-default-config-key)))
-
-(defun ema--annotated-read (prompt rows)
-  "Read one of ROWS ((LABEL . NOTE)...) with NOTE as its annotation."
-  (let ((completion-extra-properties
-         (list :annotation-function
-               (lambda (c) (when-let* ((n (cdr (assoc c rows))))
-                             (concat "   " n))))))
-    (completing-read prompt (mapcar #'car rows) nil t)))
 
 (ema-deftool ema-provider-propose (options &optional why)
   "Offer model configurations to the user; test and switch to the one they pick.
@@ -336,8 +335,7 @@ Lines: the files in `auth-sources' and whether each exists, whether gpg
 is installed and has a secret key, and for each provider key whether it
 is present.  The check of a key can make Emacs ask the user for their
 GPG passphrase."
-  (let ((files (mapcar (lambda (s) (if (stringp s) s (plist-get s :source)))
-                       auth-sources)))
+  (let ((files (ema--auth-source-files)))
     (concat
      (mapconcat (lambda (f)
                   (format "auth-source %s: %s" f
@@ -372,19 +370,30 @@ and where they get the key."
   (unless (member name (ema-secret-names))
     (error "No provider uses %s; the names are %s" name (ema-secret-names)))
   (condition-case nil
-      (let ((value (read-passwd (format "ema asks for %s (not shown, C-g cancels): " name))))
-        (if (string-empty-p value)
-            "cancelled"
-          (unwind-protect
-              (format "saved in %s" (abbreviate-file-name (ema-secret-store name value)))
-            (clear-string value))))
+      (let ((file (ema--secret-read-and-store
+                   name (format "ema asks for %s (not shown, C-g cancels): " name))))
+        (if file (format "saved in %s" file) "cancelled"))
     (quit "cancelled")))
 
 ;;;; Your own source: files, check, reload
 
 (defconst ema--source-files
-  '("ema-llm" "ema-tools" "ema-history" "ema-self" "ema-org" "ema" "ema-actions")
-  "Source files of ema in dependency order, leaves first.")
+  '("ema-llm" "ema-tools" "ema-review" "ema-history" "ema-self" "ema-org"
+    "ema-cell" "ema-chat" "ema" "ema-actions")
+  "Source files of ema in dependency order, leaves first.
+The Makefile has the same list for `make compile'.")
+
+(defun ema--self-paths ()
+  "Return the paths of `ema--source-files'."
+  (mapcar (lambda (n) (expand-file-name (concat n ".el") ema-source-directory))
+          ema--source-files))
+
+(defun ema--self-load ()
+  "Load every source file of ema, in dependency order; return their names.
+The .el files are loaded, never a stale .elc."
+  (dolist (file (ema--self-paths))
+    (load file nil 'nomessage 'nosuffix))
+  (string-join ema--source-files " "))
 
 (ema-deftool ema-self-files ()
   "Return ema's own source files, one per line: \"name — what it holds\".
@@ -403,10 +412,6 @@ folder and from the first line of each file, so it is current."
 
 (defvar ema--self-check-time nil
   "When the last `ema-self-check' started.")
-
-(defun ema--self-paths ()
-  (mapcar (lambda (n) (expand-file-name (concat n ".el") ema-source-directory))
-          ema--source-files))
 
 (ema-deftool ema-self-check ()
   "Compile ema's source and run its tests in a separate Emacs process.
@@ -437,24 +442,17 @@ the next cell; values of variables (keymaps among them) are kept."
                          (file-attribute-modification-time (file-attributes file)))
         (error "%s changed after the check; run (ema-self-check) again"
                (file-name-nondirectory file))))
-    (dolist (file (ema--self-paths))
-      (load file nil 'nomessage 'nosuffix))
-    (format "reloaded: %s" (mapconcat #'identity ema--source-files " "))))
+    (format "reloaded: %s" (ema--self-load))))
 
 (defun ema-restart ()
   "Reload all of ema's source files, in dependency order.
 Meant for development.  Loads the .el files, never stale .elc.  Values
 of `defvar's (keymaps among them) are kept; only the code is replaced."
   (interactive)
-  (when (and (seq-some (lambda (b) (buffer-local-value 'ema--busy b))
-                       (seq-filter (lambda (b) (local-variable-p 'ema--busy b))
-                                   (buffer-list)))
+  (when (and (fboundp 'ema--busy-chat) (ema--busy-chat)
              (not (yes-or-no-p "ema is working; reload anyway? ")))
     (user-error "ema-restart cancelled"))
-  (dolist (name ema--source-files)
-    (load (expand-file-name (concat name ".el") ema-source-directory)
-          nil 'nomessage 'nosuffix))
-  (message "ema reloaded: %s" (mapconcat #'identity ema--source-files " ")))
+  (message "ema reloaded: %s" (ema--self-load)))
 
 (provide 'ema-self)
 ;;; ema-self.el ends here

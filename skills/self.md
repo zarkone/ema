@@ -49,5 +49,6 @@ source only when no upper row can do the job, and say so.
   offer `(ema-git "checkout" "--" FILE)` after an `ema-confirm`.
 - The live session misbehaves after a reload: the user runs
   `M-x ema-restart` after a `git stash` or a checkout of the last good
-  commit. Tell them this before a risky change to ema.el.
+  commit. Tell them this before a risky change to ema.el, ema-chat.el or
+  ema-cell.el.
 - Never reload source that did not pass the check.

@@ -6,9 +6,23 @@
 ;; defined with `ema-deftool'.  The docstring is the only documentation:
 ;; the system prompt lists the most used tools with their first docstring
 ;; line and names the others by group, and the agent reads the rest
-;; with `describe-function' semantics (`ema-doc').  The agent extends itself with `ema-tool-save', which
-;; stores a new tool in `ema-directory'/tools/ so the next Emacs session
-;; loads it again.  Skills are the same idea for prose: Markdown notes.
+;; with `describe-function' semantics (`ema-doc').  The agent extends
+;; itself with `ema-tool-save', which stores a new tool in
+;; `ema-directory'/tools/ so the next Emacs session loads it again.
+;; Skills are the same idea for prose: Markdown notes.
+;;
+;; A `;;;;' heading in this file is more than a comment: it is the name
+;; of the tool group of every `ema-deftool' below it (see
+;; `ema-tool-groups').  A new heading above a tool changes the prompt.
+;;
+;; The file, top to bottom:
+;;
+;;   `ema-deftool', the state directory, helpers that tools share
+;;   The tool list of the prompt
+;;   The tools, one group after the other
+;;
+;; More tools are in ema-review.el, ema-history.el, ema-self.el,
+;; ema-org.el and ema-actions.el.
 
 ;;; Code:
 
@@ -19,20 +33,12 @@
 (require 'package)
 (require 'imenu)
 (require 'cl-lib)
-(require 'diff)
+(require 'pp)
 (require 'vc)
 (require 'grep)
 (require 'eieio)
 
 (declare-function eglot-project-nickname "eglot")
-
-(defface ema-noted-line '((t :inherit highlight))
-  "Face of a line that carries an ema review note."
-  :group 'ema)
-(defface ema-note-text '((t :inherit warning :slant italic))
-  "Face of an ema review note."
-  :group 'ema)
-
 (declare-function eglot-current-server "eglot")
 (declare-function eglot--TextDocumentPositionParams "eglot")
 (declare-function jsonrpc-request "jsonrpc")
@@ -40,15 +46,6 @@
 (declare-function flymake-diagnostic-beg "flymake")
 (declare-function flymake-diagnostic-type "flymake")
 (declare-function flymake-diagnostic-text "flymake")
-
-(defvar ema-directory (locate-user-emacs-file "ema/")
-  "Directory for the agent's own state: tools/ and skills/.")
-
-(defvar ema-builtin-skills-directory
-  (expand-file-name "skills/" (file-name-directory
-                               (or load-file-name buffer-file-name
-                                   default-directory)))
-  "Directory of the skills shipped with ema.")
 
 (defvar ema-tools nil
   "Symbols defined with `ema-deftool', in definition order.")
@@ -64,6 +61,97 @@ DOC is mandatory: its first line goes into the tool list the model reads."
      (unless (memq ',name ema-tools)
        (setq ema-tools (append ema-tools (list ',name))))
      ',name))
+
+;;;; The state directory
+
+(defvar ema-directory (locate-user-emacs-file "ema/")
+  "Directory for the agent's own state.
+It holds tools/ and skills/, the history database and the .eld files
+with the saved configuration, actions and agenda files.")
+
+(defvar ema-builtin-skills-directory
+  (expand-file-name "skills/" (file-name-directory
+                               (or load-file-name buffer-file-name
+                                   default-directory)))
+  "Directory of the skills shipped with ema.")
+
+(defun ema--state-file (name)
+  "Return the path of file NAME in `ema-directory'."
+  (expand-file-name name ema-directory))
+
+(defun ema--read-state (name)
+  "Return the Lisp value saved in state file NAME, or nil without the file.
+A file that does not read as Lisp signals an error."
+  (let ((file (ema--state-file name)))
+    (when (file-readable-p file)
+      (with-temp-buffer
+        (insert-file-contents file)
+        (read (current-buffer))))))
+
+(defun ema--write-state (name value)
+  "Save Lisp VALUE, printed whole, in state file NAME."
+  (make-directory ema-directory t)
+  (with-temp-file (ema--state-file name)
+    (let ((print-length nil) (print-level nil))
+      (pp value (current-buffer)))))
+
+;;;; Helpers that the tools and the chat share
+
+(defvar ema--current-chat nil
+  "The chat buffer whose cell runs now; bound while a cell runs.")
+
+(defun ema--chat-p (buffer)
+  "Non-nil when BUFFER is an ema chat."
+  (with-current-buffer buffer (derived-mode-p 'ema-mode)))
+
+(defun ema--windows-by-use ()
+  "Return the windows of the selected frame, most recently used first.
+The minibuffer window is left out."
+  (sort (window-list (selected-frame) 'no-minibuf)
+        (lambda (a b) (> (window-use-time a) (window-use-time b)))))
+
+(defun ema--user-windows ()
+  "Return the windows that do not show an ema chat, most recently used first.
+The first one is where the user works: \"this buffer\" means its buffer."
+  (seq-remove (lambda (w) (ema--chat-p (window-buffer w)))
+              (ema--windows-by-use)))
+
+(defun ema--side-window (buffer)
+  "Display BUFFER in a window that is not the ema chat; return the window."
+  (display-buffer buffer
+                  '((display-buffer-reuse-window
+                     display-buffer-use-some-window
+                     display-buffer-pop-up-window)
+                    (inhibit-same-window . t)
+                    (some-window . mru))))
+
+(defun ema--goto-line (line)
+  "Move point to the start of LINE, counted in the accessible part of the buffer."
+  (goto-char (point-min))
+  (forward-line (1- line)))
+
+(defun ema--first-line (text &optional width)
+  "Return the first line of TEXT, cut at WIDTH columns (default 68)."
+  (truncate-string-to-width (car (split-string (string-trim text) "[\r\n]"))
+                            (or width 68) nil nil t))
+
+(defun ema--diagnostic-line (diagnostic)
+  "Return flymake DIAGNOSTIC as \"line: type: message\"."
+  (format "%d: %s: %s"
+          (line-number-at-pos (flymake-diagnostic-beg diagnostic))
+          (flymake-diagnostic-type diagnostic)
+          (flymake-diagnostic-text diagnostic)))
+
+(defun ema--annotated-read (prompt rows &optional keep-order)
+  "Read one of ROWS ((LABEL . NOTE)...) with NOTE as its annotation.
+With KEEP-ORDER non-nil the candidates are shown in the order of ROWS."
+  (let ((completion-extra-properties
+         (append
+          (and keep-order (list :display-sort-function #'identity))
+          (list :annotation-function
+                (lambda (c) (when-let* ((n (cdr (assoc c rows))))
+                              (concat "   " n)))))))
+    (completing-read prompt (mapcar #'car rows) nil t)))
 
 ;;;; The tool list of the prompt
 
@@ -183,6 +271,7 @@ group; `ema-tool-group' and `ema-doc' return their signatures."
 ;;;; Discover and extend: documentation, stored tools
 
 (defun ema--tools-dir ()
+  "Return the directory of the stored tools; make it when it is missing."
   (let ((dir (expand-file-name "tools/" ema-directory)))
     (make-directory dir t)
     dir))
@@ -253,6 +342,7 @@ documentation of one tool."
 ;;;; Skills: prose notes
 
 (defun ema--skills-dir ()
+  "Return the directory of the user's skills; make it when it is missing."
   (let ((dir (expand-file-name "skills/" ema-directory)))
     (make-directory dir t)
     dir))
@@ -296,6 +386,7 @@ a fact about this machine.  It is listed in every later conversation."
 ;;;; What the user sees
 
 (defun ema--buffer-line (buf)
+  "Return one line on buffer BUF: name, modified mark, mode, file."
   (with-current-buffer buf
     (format "%s%s  [%s]%s" (buffer-name)
             (if (buffer-modified-p) "*" "")
@@ -307,33 +398,30 @@ a fact about this machine.  It is listed in every later conversation."
 For each window: buffer, mode, file, visible lines, point, the active
 region.  The first window is the most recently used one that is not the
 ema chat: \"this buffer\", \"here\" and \"this\" mean it."
-  (let* ((wins (seq-remove
-                (lambda (w) (with-current-buffer (window-buffer w)
-                              (derived-mode-p 'ema-mode)))
-                (window-list (selected-frame) 'no-minibuf)))
-         (wins (sort wins (lambda (a b) (> (window-use-time a) (window-use-time b))))))
-    (if (null wins)
-        "No window besides the ema chat."
-      (mapconcat
-       (lambda (w)
-         (with-current-buffer (window-buffer w)
-           (let ((pt (window-point w)))
-             (format "%s\n  lines %d-%d visible, point at line %d col %d%s%s"
-                     (ema--buffer-line (current-buffer))
-                     (line-number-at-pos (window-start w))
-                     (line-number-at-pos (window-end w t))
-                     (line-number-at-pos pt)
-                     (save-excursion (goto-char pt) (current-column))
-                     (if (use-region-p)
-                         (format ", region lines %d-%d"
-                                 (line-number-at-pos (region-beginning))
-                                 (line-number-at-pos (region-end)))
-                       "")
-                     (let ((pr (project-current nil)))
-                       (if pr (format "\n  project %s"
-                                      (abbreviate-file-name (project-root pr)))
-                         ""))))))
-       wins "\n"))))
+  (let ((wins (ema--user-windows)))
+    (if wins
+        (mapconcat #'ema--window-lines wins "\n")
+      "No window besides the ema chat.")))
+
+(defun ema--window-lines (window)
+  "Return what WINDOW shows, as `ema-view' reports it."
+  (with-current-buffer (window-buffer window)
+    (let ((pt (window-point window))
+          (pr (project-current nil)))
+      (format "%s\n  lines %d-%d visible, point at line %d col %d%s%s"
+              (ema--buffer-line (current-buffer))
+              (line-number-at-pos (window-start window))
+              (line-number-at-pos (window-end window t))
+              (line-number-at-pos pt)
+              (save-excursion (goto-char pt) (current-column))
+              (if (use-region-p)
+                  (format ", region lines %d-%d"
+                          (line-number-at-pos (region-beginning))
+                          (line-number-at-pos (region-end)))
+                "")
+              (if pr
+                  (format "\n  project %s" (abbreviate-file-name (project-root pr)))
+                "")))))
 
 (ema-deftool ema-buffers (&optional regexp)
   "Return the open buffers, most recently used first, one per line.
@@ -363,6 +451,7 @@ With REGEXP, only buffers whose name or file matches.  Internal buffers
                        (bound-and-true-p auth-sources))))))
 
 (defun ema--refuse-secret-file (file)
+  "Signal an error when FILE holds secrets."
   (when (ema--secret-file-p file)
     (error "%s holds secrets; ema does not read it" (abbreviate-file-name file))))
 
@@ -371,8 +460,7 @@ With REGEXP, only buffers whose name or file matches.  Internal buffers
   (save-excursion
     (save-restriction
       (widen)
-      (goto-char (point-min))
-      (forward-line (1- (or from-line 1)))
+      (ema--goto-line (or from-line 1))
       (let ((n (or from-line 1)) lines)
         (while (and (not (eobp)) (or (null to-line) (<= n to-line)))
           (push (buffer-substring-no-properties
@@ -434,58 +522,74 @@ current directory); inside a project it limits the search to that
 directory.  With SHOW non-nil the hits also open for the user in a grep
 buffer, where next-error works.  At most `ema-search-max-hits' hits
 come back; the last line says how many are left out."
+  (pcase-let* ((`(,root . ,lines) (ema--search-lines regexp files dir))
+               (shown (seq-take lines ema-search-max-hits))
+               (left-out (- (length lines) (length shown))))
+    (when (and show lines)
+      (ema--show-search regexp root lines))
+    (cond ((null lines) (format "no hits in %s" (abbreviate-file-name root)))
+          ((> left-out 0)
+           (concat (string-join shown "\n")
+                   (format "\n… %d more hits: narrow REGEXP or FILES" left-out)))
+          (t (string-join shown "\n")))))
+
+(defun ema--search-lines (regexp files dir)
+  "Search for REGEXP as `ema-search' does; return (ROOT . LINES).
+LINES are \"file:line: text\" strings with paths relative to ROOT: the
+project root, or DIR outside a project.  FILES and DIR are those of
+`ema-search'."
   (let* ((default-directory (file-name-as-directory
                              (expand-file-name (or dir default-directory))))
          (pr (project-current nil))
          (root (if pr (expand-file-name (project-root pr)) default-directory))
-         (keep (lambda (f) (or (null files)
-                               (string-match-p files (file-relative-name f root)))))
-         (items (if pr
-                    (let ((paths (seq-filter keep (project-files
-                                                   pr (and dir (list default-directory))))))
-                      (and paths (xref-matches-in-files regexp paths)))
-                  (seq-filter (lambda (x) (funcall keep (xref-location-group
-                                                         (xref-item-location x))))
-                              (xref-matches-in-directory regexp "*" root nil))))
-         (lines (mapcar (lambda (x)
-                          (let ((loc (xref-item-location x)))
-                            (format "%s:%d: %s"
-                                    (file-relative-name (xref-location-group loc) root)
-                                    (xref-location-line loc)
-                                    (string-trim (substring-no-properties (xref-item-summary x))))))
-                        items))
-         (total (length lines))
-         (shown (seq-take lines ema-search-max-hits)))
-    (when (and show lines)
-      (with-current-buffer (get-buffer-create "*ema: search*")
-        (let ((inhibit-read-only t))
-          (erase-buffer)
-          (setq default-directory root)
-          (insert (format "ema search for %s in %s\n\n" regexp (abbreviate-file-name root))
-                  (string-join lines "\n") "\n")
-          (grep-mode)
-          (goto-char (point-min)))
-        (ema--side-window (current-buffer))))
-    (cond ((null lines) (format "no hits in %s" (abbreviate-file-name root)))
-          ((> total (length shown))
-           (concat (string-join shown "\n")
-                   (format "\n… %d more hits: narrow REGEXP or FILES"
-                           (- total (length shown)))))
-          (t (string-join shown "\n")))))
+         (wanted-p (lambda (file)
+                     (or (null files)
+                         (string-match-p files (file-relative-name file root)))))
+         (matches
+          (if pr
+              (let ((paths (seq-filter wanted-p
+                                       (project-files
+                                        pr (and dir (list default-directory))))))
+                (and paths (xref-matches-in-files regexp paths)))
+            (seq-filter (lambda (match)
+                          (funcall wanted-p (xref-location-group
+                                             (xref-item-location match))))
+                        (xref-matches-in-directory regexp "*" root nil)))))
+    (cons root
+          (mapcar (lambda (match)
+                    (let ((loc (xref-item-location match)))
+                      (format "%s:%d: %s"
+                              (file-relative-name (xref-location-group loc) root)
+                              (xref-location-line loc)
+                              (string-trim (substring-no-properties
+                                            (xref-item-summary match))))))
+                  matches))))
+
+(defun ema--show-search (regexp root lines)
+  "Show the hits LINES of REGEXP under ROOT to the user in a grep buffer."
+  (with-current-buffer (get-buffer-create "*ema: search*")
+    (let ((inhibit-read-only t))
+      (erase-buffer)
+      (setq default-directory root)
+      (insert (format "ema search for %s in %s\n\n" regexp (abbreviate-file-name root))
+              (string-join lines "\n") "\n")
+      (grep-mode)
+      (goto-char (point-min)))
+    (ema--side-window (current-buffer))))
 
 ;;;; Code intelligence (LSP through eglot, xref, flymake, imenu)
 
 (defun ema--goto-symbol (symbol line)
   "Move point onto SYMBOL (a string): on LINE when given, else its first use."
   (widen)
-  (goto-char (point-min))
-  (when line (forward-line (1- line)))
+  (ema--goto-line (or line 1))
   (unless (re-search-forward (concat "\\_<" (regexp-quote symbol) "\\_>")
                              (and line (line-end-position)) t)
     (error "Symbol %s not found%s" symbol (if line (format " on line %d" line) "")))
   (goto-char (match-beginning 0)))
 
 (defun ema--xref-lines (xrefs)
+  "Return XREFS (xref items) as \"file:line: text\" strings."
   (mapcar (lambda (x)
             (let* ((loc (xref-item-location x))
                    ;; some backends (elisp) know the line only once the
@@ -544,12 +648,7 @@ With eglot these are the language server's diagnostics.  One
   (with-current-buffer (or buffer (current-buffer))
     (unless (bound-and-true-p flymake-mode)
       (error "flymake is not on in %s; call (flymake-mode 1)" (buffer-name)))
-    (mapcar (lambda (d)
-              (format "%d: %s: %s"
-                      (line-number-at-pos (flymake-diagnostic-beg d))
-                      (flymake-diagnostic-type d)
-                      (flymake-diagnostic-text d)))
-            (flymake-diagnostics))))
+    (mapcar #'ema--diagnostic-line (flymake-diagnostics))))
 
 (ema-deftool ema-outline (&optional buffer)
   "Return the definitions in BUFFER (default: current) from imenu, as \"line: name\"."
@@ -573,14 +672,10 @@ With eglot these are the language server's diagnostics.  One
 
 ;;;; Working in front of the user: show, edit, present, ask
 
-(defun ema--side-window (buffer)
-  "Display BUFFER in a window that is not the ema chat; return the window."
-  (display-buffer buffer
-                  '((display-buffer-reuse-window
-                     display-buffer-use-some-window
-                     display-buffer-pop-up-window)
-                    (inhibit-same-window . t)
-                    (some-window . mru))))
+;; Two things last for one turn and end in `ema--close-change-groups',
+;; which the chat calls when the turn ends: the user's position is saved
+;; once (`ema--push-mark'), and all edits of a buffer are one undo step
+;; (`ema--open-change-group').
 
 (defvar ema--mark-pushed nil
   "Non-nil when this turn already saved the user's position for \\[xref-go-back].")
@@ -588,9 +683,9 @@ With eglot these are the language server's diagnostics.  One
 (defun ema--push-mark ()
   "Save the user's position once a turn, so that \\[xref-go-back] returns there."
   (unless ema--mark-pushed
-    (let ((win (seq-find (lambda (w) (not (string-prefix-p "*ema" (buffer-name (window-buffer w)))))
-                         (sort (window-list nil 'no-minibuf)
-                               (lambda (a b) (> (window-use-time a) (window-use-time b)))))))
+    (let ((win (seq-find (lambda (w)
+                           (not (string-prefix-p "*ema" (buffer-name (window-buffer w)))))
+                         (ema--windows-by-use))))
       (when win
         (setq ema--mark-pushed t)
         (ignore-errors
@@ -619,26 +714,53 @@ With eglot these are the language server's diagnostics.  One
         ema--mark-pushed nil))
 
 (defun ema--pulse (beg end)
+  "Highlight the text between BEG and END for a moment."
   (when (fboundp 'pulse-momentary-highlight-region)
     (ignore-errors (pulse-momentary-highlight-region beg end))))
+
+(defun ema--reveal (buffer beg end)
+  "Show BUFFER beside the chat with BEG near the top; highlight BEG to END."
+  (with-selected-window (ema--side-window buffer)
+    (goto-char beg)
+    (recenter (min 5 (/ (window-height) 4)))
+    (ema--pulse beg end)))
+
+(defun ema--replace-once (old new file)
+  "In the current buffer, replace the one occurrence of string OLD with NEW.
+Return (BEG . END), the bounds of the new text.  OLD must occur exactly
+once in the accessible part of the buffer; FILE names the buffer in the
+error.  An empty OLD is for an empty buffer: NEW becomes its text."
+  (goto-char (point-min))
+  (let ((count (cond ((not (string-empty-p old)) (how-many (regexp-quote old)))
+                     ((= (buffer-size) 0) 1)
+                     (t (error "Empty OLD is only for a new, empty file")))))
+    (unless (= count 1)
+      (error "OLD occurs %d times in %s; it must occur once" count file))
+    (unless (string-empty-p old)
+      (search-forward old)
+      (delete-region (match-beginning 0) (match-end 0)))
+    (let ((beg (point)))
+      (insert new)
+      (cons beg (point)))))
 
 (ema-deftool ema-show (buffer-or-file &optional line end-line)
   "Show BUFFER-OR-FILE to the user in a window beside the chat.
 With LINE, scroll there and highlight LINE to END-LINE.  Use it to point
 at the code you talk about.  Returns the buffer name."
-  (let* ((buf (if (and (stringp buffer-or-file) (not (get-buffer buffer-or-file)))
-                  (find-file-noselect buffer-or-file)
-                (get-buffer buffer-or-file)))
-         (win (progn (ema--push-mark) (ema--side-window buf))))
-    (when line
-      (with-selected-window win
-        (goto-char (point-min))
-        (forward-line (1- line))
-        (recenter (min 5 (/ (window-height) 4)))
-        (ema--pulse (line-beginning-position)
-                    (save-excursion
-                      (forward-line (- (or end-line line) line))
-                      (line-end-position)))))
+  (let ((buf (if (and (stringp buffer-or-file) (not (get-buffer buffer-or-file)))
+                 (find-file-noselect buffer-or-file)
+               (get-buffer buffer-or-file))))
+    (ema--push-mark)
+    (if (null line)
+        (ema--side-window buf)
+      (pcase-let ((`(,beg . ,end)
+                   (with-current-buffer buf
+                     (save-excursion
+                       (ema--goto-line line)
+                       (cons (point)
+                             (progn (forward-line (- (or end-line line) line))
+                                    (line-end-position)))))))
+        (ema--reveal buf beg end)))
     (buffer-name buf)))
 
 (ema-deftool ema-edit (file old new &optional save)
@@ -656,27 +778,12 @@ with a new FILE creates the file."
       (save-excursion
         (save-restriction
           (widen)
-          (goto-char (point-min))
-          (let ((count (if (string-empty-p old)
-                           (if (= (buffer-size) 0) 1
-                             (error "Empty OLD is only for a new, empty file"))
-                         (how-many (regexp-quote old)))))
-            (unless (= count 1)
-              (error "OLD occurs %d times in %s; it must occur once" count file))
-            (unless (string-empty-p old)
-              (search-forward old)
-              (delete-region (match-beginning 0) (match-end 0)))
-            (let ((beg (point)))
-              (insert new)
-              (let ((end (point)) (line (line-number-at-pos beg)))
-                (when save (save-buffer))
-                (let ((win (ema--side-window buf)))
-                  (with-selected-window win
-                    (goto-char beg)
-                    (recenter (min 5 (/ (window-height) 4)))
-                    (ema--pulse beg end)))
-                (format "edited %s at line %d%s" (abbreviate-file-name file) line
-                        (if save "" " (not saved)"))))))))))
+          (pcase-let ((`(,beg . ,end) (ema--replace-once old new file)))
+            (when save (save-buffer))
+            (ema--reveal buf beg end)
+            (format "edited %s at line %d%s" (abbreviate-file-name file)
+                    (line-number-at-pos beg)
+                    (if save "" " (not saved)"))))))))
 
 (ema-deftool ema-present (name text &optional mode)
   "Show TEXT to the user in a temporary buffer *ema: NAME* beside the chat.
@@ -709,227 +816,10 @@ the list.  Use it when you need a decision, not for a yes or no."
 Use it before an action that is hard to undo."
   (y-or-n-p (concat (string-trim-right question "[? ]+") "? ")))
 
-;;;; Review: notes on lines, changes the user accepts
-
-(declare-function flymake-make-diagnostic "flymake")
-(declare-function flymake-start "flymake")
-(defvar flymake-diagnostic-functions)
-
-(defun ema--note-overlays ()
-  "Return the note overlays of the current buffer, in buffer order."
-  (save-restriction
-    (widen)
-    (sort (seq-filter (lambda (ov) (overlay-get ov 'ema-note))
-                      (overlays-in (point-min) (point-max)))
-          (lambda (a b) (< (overlay-start a) (overlay-start b))))))
-
-(defun ema-flymake (report-fn &rest _)
-  "A flymake backend: report the ema review notes as diagnostics."
-  (funcall report-fn
-           (mapcar (lambda (ov)
-                     (flymake-make-diagnostic
-                      (current-buffer) (overlay-start ov) (overlay-end ov)
-                      :note (concat "ema: " (overlay-get ov 'ema-note))))
-                   (ema--note-overlays))))
-
-(defun ema--notes-changed ()
-  "Tell flymake, when it is on here, that the notes changed."
-  (when (bound-and-true-p flymake-mode)
-    (add-hook 'flymake-diagnostic-functions #'ema-flymake nil t)
-    (ignore-errors (flymake-start))))
-
-(ema-deftool ema-note (buffer line text)
-  "Attach review note TEXT to LINE of BUFFER, shown under that line.
-The note is an overlay: it does not change the file.  Use it to review
-code in place: one short note per finding, then a summary in the chat.
-Where flymake is on, the note is also a diagnostic, so the user's usual
-keys and lists reach it.  The user moves between notes with
-\\[ema-next-note] and \\[ema-previous-note] and removes them with \\[ema-clear-notes]."
-  (with-current-buffer buffer
-    (save-excursion
-      (save-restriction
-        (widen)
-        (goto-char (point-min))
-        (forward-line (1- line))
-        (let ((ov (make-overlay (line-beginning-position) (line-end-position))))
-          (overlay-put ov 'ema-note text)
-          (overlay-put ov 'face 'ema-noted-line)
-          (overlay-put ov 'after-string
-                       (propertize (concat "\n  ▸ " (string-replace "\n" "\n    " text))
-                                   'face 'ema-note-text))
-          (overlay-put ov 'evaporate t))))
-    (ema--notes-changed)
-    (ema--push-mark)
-    (ema--side-window (current-buffer))
-    (format "note on %s:%d" (buffer-name) line)))
-
-(ema-deftool ema-notes (&optional buffer)
-  "Return the review notes in BUFFER (default: current) as \"line: text\"."
-  (with-current-buffer (or buffer (current-buffer))
-    (save-restriction
-      (widen)
-      (mapcar (lambda (ov)
-                (format "%d: %s" (line-number-at-pos (overlay-start ov))
-                        (overlay-get ov 'ema-note)))
-              (ema--note-overlays)))))
-
-(defun ema-clear-notes (&optional buffer)
-  "Remove the ema review notes from BUFFER (default: the current buffer)."
-  (interactive)
-  (with-current-buffer (or buffer (current-buffer))
-    (save-restriction
-      (widen)
-      (remove-overlays (point-min) (point-max) 'face 'ema-noted-line))
-    (ema--notes-changed)))
-
-(defun ema-next-note (&optional backward)
-  "Move to the next ema review note; with BACKWARD, to the previous one."
-  (interactive "P")
-  (let* ((starts (mapcar #'overlay-start (ema--note-overlays)))
-         (to (if backward
-                 (car (last (seq-filter (lambda (p) (< p (line-beginning-position))) starts)))
-               (seq-find (lambda (p) (> p (line-end-position))) starts))))
-    (unless starts (user-error "No ema notes in this buffer"))
-    (goto-char (or to (if backward (car (last starts)) (car starts))))
-    (message "%s" (overlay-get (seq-find (lambda (ov) (overlay-get ov 'ema-note))
-                                         (overlays-at (point)))
-                               'ema-note))))
-
-(defun ema-previous-note ()
-  "Move to the previous ema review note."
-  (interactive)
-  (ema-next-note t))
-
-;; A suggestion does not ask in the minibuffer.  A minibuffer question
-;; holds the keyboard: the user who goes to read the code first works
-;; with a prompt open behind them, and the next prompt stacks on it.
-;; `ema-suggest' waits in a recursive edit instead: the user moves
-;; freely and answers with a key in the diff buffer, or with M-x from
-;; any buffer.
-
-(defvar ema--suggestion-waiting nil
-  "Non-nil while `ema-suggest' waits for the answer of the user.")
-
-(defun ema--suggestion-answer (answer)
-  (unless ema--suggestion-waiting
-    (user-error "ema does not wait for an answer"))
-  (throw 'ema-suggestion answer))
-
-(defun ema-suggestion-apply ()
-  "Accept the change that ema suggests."
-  (interactive)
-  (ema--suggestion-answer 'apply))
-
-(defun ema-suggestion-decline ()
-  "Decline the change that ema suggests."
-  (interactive)
-  (ema--suggestion-answer 'decline))
-
-(defvar ema-suggestion-mode-map
-  (let ((map (make-sparse-keymap)))
-    (define-key map "y" #'ema-suggestion-apply)
-    (define-key map "n" #'ema-suggestion-decline)
-    (define-key map (kbd "C-c C-c") #'ema-suggestion-apply)
-    (define-key map (kbd "C-c C-k") #'ema-suggestion-decline)
-    map)
-  "Keys of the diff buffer while ema waits for an answer.")
-
-(define-minor-mode ema-suggestion-mode
-  "Answer keys in the buffer that shows a suggestion of ema.
-\\{ema-suggestion-mode-map}"
-  :lighter " ema?"
-  (if ema-suggestion-mode
-      ;; ahead of the keys that `diff-mode' gives a read-only buffer
-      (setq-local minor-mode-overriding-map-alist
-                  (cons (cons 'ema-suggestion-mode ema-suggestion-mode-map)
-                        minor-mode-overriding-map-alist))
-    (setq-local minor-mode-overriding-map-alist
-                (assq-delete-all 'ema-suggestion-mode
-                                 minor-mode-overriding-map-alist))))
-
-(defun ema--suggestion-wait (diff question)
-  "Wait for the answer to QUESTION about the change in buffer DIFF.
-Return non-nil when the user accepts.  The wait is a recursive edit, not
-a minibuffer prompt: the user can read other buffers first.  They answer
-with y or n in DIFF, or with `ema-suggestion-apply' and
-`ema-suggestion-decline' from any buffer.  To kill DIFF is to decline."
-  (let ((ema--suggestion-waiting t)
-        (declined (lambda () (when ema--suggestion-waiting
-                               (throw 'ema-suggestion 'decline))))
-        (keys "y apply, n decline")
-        (origin (selected-window)))
-    (unwind-protect
-        (progn
-          (with-current-buffer diff
-            (ema-suggestion-mode 1)
-            (setq header-line-format
-                  (concat " " (propertize question 'face 'bold) "  " keys))
-            (add-hook 'kill-buffer-hook declined nil t))
-          (when-let* ((win (get-buffer-window diff)))
-            (select-window win))
-          (message "%s  %s (in the diff buffer)" question keys)
-          (eq 'apply (catch 'ema-suggestion (recursive-edit) 'decline)))
-      (when (buffer-live-p diff)
-        (with-current-buffer diff
-          (remove-hook 'kill-buffer-hook declined t)
-          (ema-suggestion-mode -1)
-          (setq header-line-format nil)))
-      (when (window-live-p origin) (select-window origin)))))
-
-(defun ema--suggestion-diff (buf after file diff)
-  "Fill buffer DIFF with the diff from BUF to AFTER, named as FILE.
-The header names FILE, so that the `diff-mode' commands that go to the
-source find it and do not ask for a file."
-  (diff-no-select buf after "-u" t diff)
-  (with-current-buffer diff
-    (setq default-directory (file-name-directory (expand-file-name file)))
-    (let ((inhibit-read-only t)
-          (name (file-name-nondirectory file)))
-      (save-excursion
-        (goto-char (point-min))
-        (when (re-search-forward "^--- .*$" nil t)
-          (replace-match (concat "--- " name) t t))
-        (when (re-search-forward "^\\+\\+\\+ .*$" nil t)
-          (replace-match (concat "+++ " name) t t))))))
-
-(ema-deftool ema-suggest (file old new &optional why)
-  "Propose to replace OLD with NEW in FILE; the user accepts or declines.
-The change is shown as a diff beside the chat with the reason WHY.  The
-call waits until the user answers with a key in the diff buffer; they
-can read other buffers first.  Returns \"applied\" or \"declined\".
-This is the default way to change the user's code: they stay the
-author.  OLD must occur exactly once (see `ema-edit')."
-  (let* ((buf (find-file-noselect file))
-         (after (generate-new-buffer " *ema-after*"))
-         (diff (get-buffer-create "*ema: suggestion*")))
-    (unwind-protect
-        (progn
-          (with-current-buffer after
-            (insert (with-current-buffer buf
-                      (save-restriction (widen) (buffer-string))))
-            (goto-char (point-min))
-            (unless (= 1 (how-many (regexp-quote old)))
-              (error "OLD occurs %d times in %s; it must occur once"
-                     (how-many (regexp-quote old)) file))
-            (search-forward old)
-            (replace-match new t t))
-          (ema--suggestion-diff buf after file diff)
-          (ema--side-window diff)
-          (if (ema--suggestion-wait
-               diff (format "ema suggests%s. Apply?"
-                            (if why (concat ": " (string-trim-right why "[. ]+"))
-                              " a change")))
-              (progn (ema-edit file old new) "applied (not saved)")
-            "declined"))
-      (kill-buffer after))))
-
 ;;;; Status: read Emacs's, report your own
 
 (defvar-local ema-status-text nil
   "What the agent says it is doing; shown in the chat header.")
-
-(defvar ema--current-chat nil
-  "The chat buffer whose cell runs now; bound while a cell runs.")
 
 (ema-deftool ema-status (text)
   "Tell the user what you are doing now: TEXT appears in the chat header.
@@ -978,14 +868,20 @@ With REGEXP, only packages whose name or summary matches.  A trailing
 that a package exists, and prefer what the user already has."
   (let (out)
     (dolist (cell package-alist)
-      (let* ((desc (cadr cell))
-             (line (format "%s %s — %s%s" (car cell)
-                           (package-version-join (package-desc-version desc))
-                           (or (package-desc-summary desc) "")
-                           (if (featurep (car cell)) " [loaded]" ""))))
+      (let ((line (ema--package-line
+                   cell (if (featurep (car cell)) " [loaded]" ""))))
         (when (or (null regexp) (string-match-p regexp line))
           (push line out))))
     (string-join (sort out #'string<) "\n")))
+
+(defun ema--package-line (cell mark)
+  "Return \"name version — summary\" and MARK for CELL.
+CELL is an element of `package-alist' or `package-archive-contents'."
+  (let ((desc (cadr cell)))
+    (format "%s %s — %s%s" (car cell)
+            (package-version-join (package-desc-version desc))
+            (or (package-desc-summary desc) "")
+            mark)))
 
 (ema-deftool ema-package-search (regexp)
   "Search the package archives for REGEXP in the name or summary.
@@ -994,11 +890,8 @@ what the user has.  Use it to find a package to suggest."
   (unless package-archive-contents (package-refresh-contents))
   (let (out)
     (dolist (cell package-archive-contents)
-      (let* ((desc (cadr cell))
-             (line (format "%s %s — %s%s" (car cell)
-                           (package-version-join (package-desc-version desc))
-                           (or (package-desc-summary desc) "")
-                           (if (package-installed-p (car cell)) " [installed]" ""))))
+      (let ((line (ema--package-line
+                   cell (if (package-installed-p (car cell)) " [installed]" ""))))
         (when (string-match-p regexp line) (push line out))))
     (string-join (seq-take (sort out #'string<) 40) "\n")))
 
@@ -1063,6 +956,7 @@ builds, tests, linters and downloads (`ema-run')."
   "In an ema-run buffer: how the command ended, or nil while it runs.")
 
 (defun ema--run-buffer-name (name)
+  "Return the name of the buffer of the `ema-run' command NAME."
   (format "*ema-run: %s*" (or name "check")))
 
 (ema-deftool ema-run (command &optional dir name)
@@ -1124,6 +1018,7 @@ the command still runs, do other work or end your turn and say so."
   "Git subcommands that only read; `ema-git' runs them without magit.")
 
 (defun ema--git-plain (args)
+  "Run git ARGS as a plain process; return (:exit CODE :output STRING :via git)."
   (with-temp-buffer
     (let ((code (apply #'process-file "git" nil t nil args)))
       (list :exit code :output (buffer-string) :via 'git))))

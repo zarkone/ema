@@ -25,9 +25,6 @@
 (defvar org-done-keywords)
 (defvar org-todo-keywords-1)
 
-(defun ema--agenda-file ()
-  (expand-file-name "agenda.eld" ema-directory))
-
 (defvar ema--agenda-added nil
   "The files that ema added to the org agenda; saved in agenda.eld.")
 
@@ -40,14 +37,12 @@
 
 (defun ema-load-agenda ()
   "Load the list of agenda files that ema added; apply it when org loads."
-  (let ((file (ema--agenda-file)))
-    (when (file-readable-p file)
-      (setq ema--agenda-added
-            (ignore-errors (with-temp-buffer (insert-file-contents file)
-                                             (read (current-buffer)))))))
+  (when-let* ((files (ignore-errors (ema--read-state "agenda.eld"))))
+    (setq ema--agenda-added files))
   (with-eval-after-load 'org (ema--agenda-apply)))
 
 (defun ema--on-agenda-p (file)
+  "Non-nil when FILE is one of the user's agenda files."
   (member (file-truename file) (mapcar #'file-truename (org-agenda-files))))
 
 (ema-deftool ema-agenda-files ()
@@ -82,9 +77,7 @@ change."
       "declined")
      (t
       (cl-pushnew file ema--agenda-added :test #'equal)
-      (make-directory ema-directory t)
-      (with-temp-file (ema--agenda-file)
-        (pp ema--agenda-added (current-buffer)))
+      (ema--write-state "agenda.eld" ema--agenda-added)
       (ema--agenda-apply)
       "added"))))
 

@@ -213,16 +213,22 @@ compiles and runs the tests in a separate Emacs (`ema-self-check`).
 
 | File | Holds |
 |---|---|
-| `ema.el` | The cell evaluator, the chats, the loop, the window, resume |
 | `ema-llm.el` | Providers (Anthropic and OpenAI-compatible wire formats), secrets, HTTP |
 | `ema-tools.el` | `ema-deftool`, the tool list of the prompt and the built-in tools |
+| `ema-review.el` | Notes on lines, suggested changes that you accept or decline |
 | `ema-history.el` | The SQLite history and the memories |
 | `ema-self.el` | Provider test and switch, the self check, the saved configuration |
 | `ema-org.el` | Todos in org files, the agenda |
+| `ema-cell.el` | The cell evaluator: runs one cell and builds its result for the model |
+| `ema-chat.el` | The chat buffer: its state, the transcript, the input, the header, the cell queue |
+| `ema.el` | The conversation: the commands, the turn (model call, reply, cells), the window, resume |
 | `ema-actions.el` | Context at point, the prefix keymap, the menu, actions |
 | `skills/core.md` | The fixed part of the system prompt; the tool, skill and memory lists are generated |
 | `skills/*.md` | Skills that ema reads on demand |
 | `ema-tests.el` | The tests: `make test`; `make compile` checks for warnings |
+
+The table is in load order. Each file starts with a map of its own
+parts, and `ema.el` starts with the path of one turn through the code.
 
 ## Safety
 

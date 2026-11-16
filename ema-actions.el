@@ -17,6 +17,14 @@
 ;; Bind the prefix map once, for example:
 ;;
 ;;   (keymap-global-set "C-c e" ema-command-map)
+;;
+;; The file, top to bottom:
+;;
+;;   Context          what the cursor points at, as text for the model
+;;   Entry points     ask here, add a reference, ask about a file
+;;   Actions          the table, the prefix keymap, a command per action
+;;   The menu (transient) and embark
+;;   Actions: the shortcuts of the user   the tools that save an action
 
 ;;; Code:
 
@@ -24,8 +32,6 @@
 
 (declare-function flymake-diagnostics "flymake")
 (declare-function flymake-diagnostic-beg "flymake")
-(declare-function flymake-diagnostic-type "flymake")
-(declare-function flymake-diagnostic-text "flymake")
 
 (defcustom ema-context-max-lines 200
   "A context longer than this is sent as a reference without its text."
@@ -112,8 +118,7 @@ Add a function here to teach ema what \"this\" means in a new mode.")
                            (when place
                              (with-current-buffer (car place)
                                (save-excursion
-                                 (goto-char (point-min))
-                                 (forward-line (1- (cadr place)))
+                                 (ema--goto-line (cadr place))
                                  (concat "\n[source]\n"
                                          (ema--numbered
                                           (line-beginning-position -2)
@@ -130,12 +135,16 @@ Add a function here to teach ema what \"this\" means in a new mode.")
           (list :label (format "%s:%s" (buffer-name) (substring-no-properties title))
                 :text (ema--context-block
                        "org subtree"
-                       (format "buffer %s%s | lines %d-%d" (buffer-name)
-                               (if buffer-file-name
-                                   (concat " | file " (abbreviate-file-name buffer-file-name))
-                                 "")
+                       (format "%s | lines %d-%d" (ema--context-source)
                                (line-number-at-pos beg) (line-number-at-pos end))
                        (ema--numbered beg (max beg (1- end))))))))))
+
+(defun ema--context-source ()
+  "Return \"buffer NAME\" for the current buffer, with its file when it has one."
+  (format "buffer %s%s" (buffer-name)
+          (if buffer-file-name
+              (concat " | file " (abbreviate-file-name buffer-file-name))
+            "")))
 
 (defun ema--context-bounds (scope)
   "Return (KIND BEG END) for SCOPE in the current buffer.
@@ -186,25 +195,14 @@ functions in `ema-context-functions' are asked first."
                (to (line-number-at-pos end))
                (lines (1+ (- to from)))
                (fn (ignore-errors (add-log-current-defun)))
-               (diags (and (bound-and-true-p flymake-mode)
-                           (delq nil
-                                 (mapcar
-                                  (lambda (d)
-                                    (let ((l (line-number-at-pos (flymake-diagnostic-beg d))))
-                                      (and (<= from l to)
-                                           (format "%d: %s: %s" l
-                                                   (flymake-diagnostic-type d)
-                                                   (flymake-diagnostic-text d)))))
-                                  (flymake-diagnostics))))))
+               (diags (ema--diagnostics-between from to)))
     (list
      :label (format "%s:%s" (buffer-name)
                     (if (= from to) from (format "%d-%d" from to)))
      :text
      (concat
-      (format "[context: %s | buffer %s%s | %s%s%s]\n"
-              kind (buffer-name)
-              (if buffer-file-name
-                  (concat " | file " (abbreviate-file-name buffer-file-name)) "")
+      (format "[context: %s | %s | %s%s%s]\n"
+              kind (ema--context-source)
               (if (= from to) (format "line %d, column %d" from (current-column))
                 (format "lines %d-%d" from to))
               (if (and fn (not (equal kind "buffer"))) (format " | in %s" fn) "")
@@ -213,6 +211,14 @@ functions in `ema-context-functions' are asked first."
           (format "(%d lines, not included: read them with ema-buffer-text)" lines)
         (ema--numbered beg end))
       (if diags (concat "\n[diagnostics here]\n" (string-join diags "\n")) "")))))
+
+(defun ema--diagnostics-between (from to)
+  "Return the flymake diagnostics on lines FROM to TO, one string for each."
+  (and (bound-and-true-p flymake-mode)
+       (mapcar #'ema--diagnostic-line
+               (seq-filter (lambda (d)
+                             (<= from (line-number-at-pos (flymake-diagnostic-beg d)) to))
+                           (flymake-diagnostics)))))
 
 ;;;; Entry points
 
@@ -237,17 +243,16 @@ the command in other places to send several references in one message."
     (deactivate-mark)
     (ema)
     (with-current-buffer (ema--chat-buffer)
-      (push ctx ema--pending)
-      (goto-char (point-max))
-      (insert (propertize (format "⟨%s⟩" (plist-get ctx :label))
-                          'face 'ema-result 'ema-ref (plist-get ctx :label))
-              " "))))
+      (ema--add-reference ctx))))
 
-(defun ema--show-chat ()
-  "Display the chat without leaving the current window."
-  (let ((win (selected-window)))
-    (display-buffer (ema--chat-buffer) ema-display-action)
-    (when (window-live-p win) (select-window win))))
+(defun ema-ask-file (file question)
+  "Ask ema QUESTION about FILE."
+  (interactive "fFile: \nsema, about this file: ")
+  (ema--show-chat)
+  (ema-submit question
+              (list (list :label (file-name-nondirectory (directory-file-name file))
+                          :text (format "[context: file | %s (not read: read what you need)]"
+                                        (abbreviate-file-name (expand-file-name file)))))))
 
 ;;;; Actions: a pre-prompt and a scope under one name
 
@@ -268,24 +273,32 @@ the command in other places to send several references in one message."
 `line' or `buffer'; an active region always wins), :key (a key in
 `ema-command-map', or nil).")
 
-(defvar ema-command-map
-  (let ((map (make-sparse-keymap)))
-    (define-key map "a" #'ema-ask-here)
-    (define-key map "c" #'ema-add-here)
-    (define-key map "." #'ema-act)
-    (define-key map "o" #'ema)
-    (define-key map "n" #'ema-new)
-    (define-key map "k" #'ema-abort)
-    (define-key map "p" #'ema-switch-provider)
-    (define-key map "q" #'ema-clear-notes)
-    map)
-  "Prefix keymap of ema; bind it to a key, such as C-c e.")
-;; outside the defvar, so that a reload (`ema-restart') adds them too
-(define-key ema-command-map "]" #'ema-next-note)
-(define-key ema-command-map "[" #'ema-previous-note)
-(define-key ema-command-map "m" #'ema-menu)
-(define-key ema-command-map "h" #'ema-resume)
+(defvar ema-command-map (make-sparse-keymap)
+  "Prefix keymap of ema; bind it to a key, such as C-c e.
+The fixed keys are set below.  The key of an action is its :key in
+`ema-actions'.")
+
+;; The fixed keys.  They are set at every load, not in the `defvar', so
+;; that a reload (`ema-restart') adds a new key to the map that exists.
+(pcase-dolist (`(,key . ,command)
+               '(("a" . ema-ask-here)
+                 ("c" . ema-add-here)
+                 ("." . ema-act)
+                 ("m" . ema-menu)
+                 ("]" . ema-next-note)
+                 ("[" . ema-previous-note)
+                 ("q" . ema-clear-notes)
+                 ("o" . ema)
+                 ("n" . ema-new)
+                 ("h" . ema-resume)
+                 ("k" . ema-abort)
+                 ("p" . ema-switch-provider)))
+  (define-key ema-command-map key command))
 (fset 'ema-command-map ema-command-map)
+
+(defun ema--action-command (name)
+  "Return the symbol of the command that runs action NAME: ema-act-NAME."
+  (intern (format "ema-act-%s" name)))
 
 (defun ema-run-action (name)
   "Send the context at point to ema with the pre-prompt of action NAME."
@@ -298,7 +311,7 @@ the command in other places to send several references in one message."
 
 (defun ema--install-action (name)
   "Define command ema-act-NAME and bind the key of action NAME."
-  (let ((cmd (intern (format "ema-act-%s" name)))
+  (let ((cmd (ema--action-command name))
         (action (alist-get name ema-actions)))
     (defalias cmd
       (lambda () (interactive) (ema-run-action name))
@@ -325,6 +338,7 @@ the command in other places to send several references in one message."
 (declare-function transient-setup "transient")
 
 (defun ema--menu-title ()
+  "Return the title of the menu: the provider and model in use."
   (format "ema · %s" (ema--config-label)))
 
 ;;;###autoload
@@ -339,7 +353,7 @@ shortcuts that you or ema added."
                             (lambda (cell)
                               (let ((key (plist-get (cdr cell) :key)))
                                 (and key (list key (symbol-name (car cell))
-                                               (intern (format "ema-act-%s" (car cell)))))))
+                                               (ema--action-command (car cell))))))
                             ema-actions))))
     (eval
      `(transient-define-prefix ema--menu ()
@@ -364,15 +378,6 @@ shortcuts that you or ema added."
      t))
   (transient-setup 'ema--menu))
 
-(defun ema-ask-file (file question)
-  "Ask ema QUESTION about FILE."
-  (interactive "fFile: \nsema, about this file: ")
-  (ema--show-chat)
-  (ema-submit question
-              (list (list :label (file-name-nondirectory (directory-file-name file))
-                          :text (format "[context: file | %s (not read: read what you need)]"
-                                        (abbreviate-file-name (expand-file-name file)))))))
-
 (defvar embark-target-injection-hooks)
 (with-eval-after-load 'embark
   ;; z = ema, in `embark-act' on a region, a symbol, a definition or a file
@@ -390,21 +395,15 @@ shortcuts that you or ema added."
 
 ;;;; Actions: the shortcuts of the user
 
-(defun ema--actions-file ()
-  (expand-file-name "actions.eld" ema-directory))
-
 (defvar ema--stored-actions nil
   "The actions the user or the agent added; saved in actions.eld.")
 
 (defun ema-load-actions ()
   "Load the saved actions and define a command for every action."
-  (let ((file (ema--actions-file)))
-    (when (file-readable-p file)
-      (condition-case err
-          (setq ema--stored-actions
-                (with-temp-buffer (insert-file-contents file)
-                                  (read (current-buffer))))
-        (error (message "ema: actions not loaded: %s" (error-message-string err))))))
+  (condition-case err
+      (when (file-readable-p (ema--state-file "actions.eld"))
+        (setq ema--stored-actions (ema--read-state "actions.eld")))
+    (error (message "ema: actions not loaded: %s" (error-message-string err))))
   (dolist (cell ema--stored-actions)
     (setf (alist-get (car cell) ema-actions) (cdr cell)))
   (dolist (cell ema-actions)
@@ -434,16 +433,13 @@ sessions."
   (unless (and (symbolp name) (stringp prompt) (not (string-empty-p prompt)))
     (error "NAME must be a symbol and PROMPT a non-empty string"))
   (when (and key (let ((bound (lookup-key ema-command-map key)))
-                   (and bound (not (eq bound (intern (format "ema-act-%s" name)))))))
+                   (and bound (not (eq bound (ema--action-command name))))))
     (error "Key %s is taken by %s in the ema prefix map"
            key (lookup-key ema-command-map key)))
   (let ((plist (list :key key :scope (or scope 'defun) :prompt prompt)))
     (setf (alist-get name ema-actions) plist)
     (setf (alist-get name ema--stored-actions) plist)
-    (make-directory ema-directory t)
-    (with-temp-file (ema--actions-file)
-      (let ((print-length nil) (print-level nil))
-        (pp ema--stored-actions (current-buffer))))
+    (ema--write-state "actions.eld" ema--stored-actions)
     (ema--install-action name)
     (format "saved: M-x ema-act-%s%s" name
             (let ((prefix (where-is-internal ema-command-map nil t)))
@@ -460,9 +456,8 @@ sessions."
       (define-key ema-command-map (plist-get action :key) nil))
     (setq ema-actions (assq-delete-all name ema-actions)
           ema--stored-actions (assq-delete-all name ema--stored-actions))
-    (fmakunbound (intern (format "ema-act-%s" name)))
-    (with-temp-file (ema--actions-file)
-      (pp ema--stored-actions (current-buffer)))
+    (fmakunbound (ema--action-command name))
+    (ema--write-state "actions.eld" ema--stored-actions)
     (format "deleted %s" name)))
 
 (ema-load-actions)

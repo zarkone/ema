@@ -434,6 +434,40 @@ The directory is not a project, so the chat is \"*ema*\"."
                               :stop "end_turn" :usage '(:in 10 :cached 0 :out 100))))
        (should (= 10 ema--speed))))))
 
+;; a test of the input: `ema-send' takes the text and the references
+(ert-deftest ema-send-takes-the-input-and-its-references ()
+  (ema-tests--with-chat
+   (let ((ema-input-history nil) sent)
+     (cl-letf (((symbol-function 'ema-llm-request)
+                (lambda (_s messages &rest _) (setq sent messages) nil)))
+       (with-current-buffer (ema--chat-buffer)
+         (should-error (ema-send) :type 'user-error) ; nothing to send
+         (ema--add-reference '(:label "a.el:1" :text "[context: one]"))
+         (ema--add-reference '(:label "b.el:2" :text "[context: two]"))
+         ;; a reference whose tag the user deleted is not sent
+         (goto-char ema--input)
+         (search-forward "⟨b.el:2⟩ ")
+         (delete-region (match-beginning 0) (match-end 0))
+         (goto-char (point-max))
+         (insert "why?")
+         (ema-send)
+         (let ((text (plist-get (aref (plist-get (car sent) :content) 0) :text)))
+           (should (string-match-p "\\[context: one\\]\n\nwhy\\?\\'" text))
+           (should-not (string-match-p "context: two" text)))
+         (should (string-match-p "› why\\?  ⟨a.el:1⟩\n" (buffer-string)))
+         ;; the input is empty again, and M-p brings the text back
+         (should (equal (buffer-substring-no-properties ema--input (point-max)) ""))
+         (should-not ema--pending)
+         (should (equal ema-input-history '("why?")))
+         (should-error (ema-send) :type 'user-error) ; a turn runs
+         (ema-abort)
+         (insert "draft")
+         (ema-history-previous)
+         (should (equal (buffer-substring-no-properties ema--input (point-max)) "why?"))
+         (ema-history-next)
+         (should (equal (buffer-substring-no-properties ema--input (point-max))
+                        "draft")))))))
+
 (ert-deftest ema-secrets-in-auth-source ()
   (let* ((file (make-temp-file "ema-authinfo"))
          (auth-sources (list file))

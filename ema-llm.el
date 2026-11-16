@@ -8,6 +8,17 @@
 ;; makes a provider switch possible in the middle of a conversation.
 ;;
 ;; Secrets go through `ema-secret' only; the default source is auth-source.
+;;
+;; The file, top to bottom:
+;;
+;;   Providers            the table `ema-providers' and the fallback choice
+;;   Secrets              read a key, save a key
+;;   The provider in use  `ema-current-config': which provider and model a
+;;                        project gets
+;;   JSON                 encode and parse
+;;   Wire formats         Anthropic and OpenAI-compatible: body, headers,
+;;                        parse
+;;   Transport            `ema-llm-request': HTTP, retries, the timeout
 
 ;;; Code:
 
@@ -15,78 +26,11 @@
 (require 'url-http)
 (require 'json)
 (require 'subr-x)
+(require 'seq)
+(require 'auth-source)
 
 (defvar url-http-end-of-headers)
 (defvar url-http-response-status)
-
-;;;; Secrets
-
-(require 'auth-source)
-
-(defvar ema-secret-function #'ema-secret-from-auth-source
-  "Function of one argument NAME that returns the secret or nil.
-Replace it to read from another store (pass, a keyring).")
-
-(defcustom ema-secret-store-file nil
-  "The file where `ema-secret-set' saves a secret.
-nil means the first GPG-encrypted file in `auth-sources'.  A file that
-does not end in .gpg holds the secret as plain text."
-  :type '(choice (const nil) file) :group 'ema)
-
-(defun ema-secret-from-auth-source (name)
-  "Return secret NAME from `auth-sources', else from the environment.
-The entry is the one whose host (\"machine\") is NAME:
-  machine llm.key.anthropic login ema password VALUE
-The environment name is NAME upcased with dots as underscores."
-  (or (auth-source-pick-first-password :host name)
-      (getenv (upcase (string-replace "." "_" name)))))
-
-(defun ema-secret (name)
-  "Return secret NAME, or signal an error that names it."
-  (or (funcall ema-secret-function name)
-      (error "ema: no secret %s. Add it with M-x ema-secret-set" name)))
-
-(defun ema--secret-store-file ()
-  "Return the file that receives a new secret, or signal an error."
-  (or ema-secret-store-file
-      (seq-find (lambda (f) (and (stringp f) (string-suffix-p ".gpg" f)))
-                (mapcar (lambda (s) (if (stringp s) s (plist-get s :source)))
-                        auth-sources))
-      (error "No .gpg file in `auth-sources': add \"~/.authinfo.gpg\" to it first")))
-
-(defun ema-secret-store (name value)
-  "Save VALUE as secret NAME in the auth-source file; return the file.
-An older entry for NAME in that file is replaced by hand: this adds an
-entry and does not remove one."
-  (let* ((file (ema--secret-store-file))
-         (auth-sources (list file))
-         (found (car (auth-source-search :host name :user "ema" :secret value
-                                         :max 1 :create t)))
-         (save (plist-get found :save-function)))
-    (when (functionp save) (funcall save))
-    (auth-source-forget-all-cached)
-    file))
-
-(defvar ema-providers)
-
-(defun ema-secret-names ()
-  "Return the secret names that the providers use."
-  (delete-dups (delq nil (mapcar (lambda (cell) (plist-get (cdr cell) :key))
-                                 ema-providers))))
-
-(defun ema-secret-set (name)
-  "Read the value of secret NAME in the minibuffer and save it.
-The value is not echoed and not kept in a buffer.  It goes to the
-GPG-encrypted file in `auth-sources' (see `ema-secret-store-file')."
-  (interactive
-   (list (completing-read "Secret name: " (ema-secret-names) nil nil nil nil
-                          (car (ema-secret-names)))))
-  (let ((value (read-passwd (format "Value of %s (not shown): " name))))
-    (when (string-empty-p value) (user-error "Empty value; nothing saved"))
-    (unwind-protect
-        (message "ema: %s saved in %s" name
-                 (abbreviate-file-name (ema-secret-store name value)))
-      (clear-string value))))
 
 ;;;; Providers
 
@@ -124,11 +68,99 @@ KEY is a project root or `ema-default-config-key'.  The result is a
 plist (:provider SYMBOL :model STRING-OR-NIL :options PLIST).
 ema-history.el sets it to read the database.")
 
-(defvar ema-request-timeout 600
-  "Seconds before a model request is abandoned.")
+;;;; Secrets
+
+(defvar ema-secret-function #'ema-secret-from-auth-source
+  "Function of one argument NAME that returns the secret or nil.
+Replace it to read from another store (pass, a keyring).")
+
+(defcustom ema-secret-store-file nil
+  "The file where `ema-secret-set' saves a secret.
+nil means the first GPG-encrypted file in `auth-sources'.  A file that
+does not end in .gpg holds the secret as plain text."
+  :type '(choice (const nil) file) :group 'ema)
+
+(defun ema-secret-from-auth-source (name)
+  "Return secret NAME from `auth-sources', else from the environment.
+The entry is the one whose host (\"machine\") is NAME:
+  machine llm.key.anthropic login ema password VALUE
+The environment name is NAME upcased with dots as underscores."
+  (or (auth-source-pick-first-password :host name)
+      (getenv (upcase (string-replace "." "_" name)))))
+
+(defun ema-secret (name)
+  "Return secret NAME, or signal an error that names it."
+  (or (funcall ema-secret-function name)
+      (error "ema: no secret %s. Add it with M-x ema-secret-set" name)))
+
+(defun ema--auth-source-files ()
+  "Return the entries of `auth-sources' as file names.
+An entry that names no file comes back as it is, not as a string."
+  (mapcar (lambda (source)
+            (if (stringp source) source (plist-get source :source)))
+          auth-sources))
+
+(defun ema--secret-store-file ()
+  "Return the file that receives a new secret, or signal an error."
+  (or ema-secret-store-file
+      (seq-find (lambda (f) (and (stringp f) (string-suffix-p ".gpg" f)))
+                (ema--auth-source-files))
+      (error "No .gpg file in `auth-sources': add \"~/.authinfo.gpg\" to it first")))
+
+(defun ema-secret-store (name value)
+  "Save VALUE as secret NAME in the auth-source file; return the file.
+An older entry for NAME in that file is replaced by hand: this adds an
+entry and does not remove one."
+  (let* ((file (ema--secret-store-file))
+         (auth-sources (list file))
+         (found (car (auth-source-search :host name :user "ema" :secret value
+                                         :max 1 :create t)))
+         (save (plist-get found :save-function)))
+    (when (functionp save) (funcall save))
+    (auth-source-forget-all-cached)
+    file))
+
+(defun ema-secret-names ()
+  "Return the secret names that the providers use."
+  (delete-dups (delq nil (mapcar (lambda (cell) (plist-get (cdr cell) :key))
+                                 ema-providers))))
+
+(defun ema-secret-set (name)
+  "Read the value of secret NAME in the minibuffer and save it.
+The value is not echoed and not kept in a buffer.  It goes to the
+GPG-encrypted file in `auth-sources' (see `ema-secret-store-file')."
+  (interactive
+   (list (completing-read "Secret name: " (ema-secret-names) nil nil nil nil
+                          (car (ema-secret-names)))))
+  (let ((file (ema--secret-read-and-store
+               name (format "Value of %s (not shown): " name))))
+    (unless file (user-error "Empty value; nothing saved"))
+    (message "ema: %s saved in %s" name file)))
+
+(defun ema--secret-read-and-store (name prompt)
+  "Read the value of secret NAME with PROMPT, hidden, and save it.
+Return the abbreviated name of the file, or nil when the user typed
+nothing.  The value is cleared from memory after the save."
+  (let ((value (read-passwd prompt)))
+    (unwind-protect
+        (unless (string-empty-p value)
+          (abbreviate-file-name (ema-secret-store name value)))
+      (clear-string value))))
+
+;;;; The provider in use: .dir-locals.el, the project, the default
+
+;; A choice has three stored sources and one fallback.  Most specific
+;; first:
+;;
+;;   1. .dir-locals.el of the project (`ema-provider', `ema-model')
+;;   2. the row of the project        } in the history database, read
+;;   3. the default row               } through `ema-config-store-function'
+;;   4. the variable `ema-provider'
+;;
+;; ema-self.el has the commands and tools that test and store a choice.
 
 (defvar ema-directory)
-(declare-function ema--project-root "ema")
+(declare-function ema--project-root "ema-chat")
 
 (defvar ema--config-cache nil
   "Alist ((ROOT DIRECTORY PROVIDER) . (TIME . CHOICE)) of resolved choices.
@@ -190,26 +222,34 @@ such as :effort), :plist (the provider's plist with both applied, ready
 for a request) and :source (`dir-locals', `project', `default' or
 `variable')."
   (let* ((root (or root (and (fboundp 'ema--project-root) (ema--project-root))))
-         (key (list root (bound-and-true-p ema-directory) ema-provider))
-         (hit (assoc key ema--config-cache))
-         (choice (if (and hit (< (- (float-time) (cadr hit))
-                                 ema--config-cache-seconds))
-                     (cddr hit)
-                   (let ((c (ema--config-choice root)))
-                     (setf (alist-get key ema--config-cache nil nil #'equal)
-                           (cons (float-time) c))
-                     c)))
-         (plist (copy-sequence (ema-provider-plist (plist-get choice :provider))))
-         (options (plist-get choice :options)))
-    (when (plist-get choice :model)
-      (setq plist (plist-put plist :model (plist-get choice :model))))
-    (while options
-      (setq plist (plist-put plist (pop options) (pop options))))
+         (choice (ema--config-choice-cached root))
+         (model (plist-get choice :model))
+         (options (plist-get choice :options))
+         (plist (ema--plist-merge (ema-provider-plist (plist-get choice :provider))
+                                  (append (and model (list :model model)) options))))
     (list :provider (plist-get choice :provider)
           :model (plist-get plist :model)
-          :options (plist-get choice :options)
+          :options options
           :source (plist-get choice :source)
           :plist plist)))
+
+(defun ema--config-choice-cached (root)
+  "Return `ema--config-choice' for ROOT, at most `ema--config-cache-seconds' old."
+  (let* ((key (list root (bound-and-true-p ema-directory) ema-provider))
+         (hit (assoc key ema--config-cache)))
+    (if (and hit (< (- (float-time) (cadr hit)) ema--config-cache-seconds))
+        (cddr hit)
+      (let ((choice (ema--config-choice root)))
+        (setf (alist-get key ema--config-cache nil nil #'equal)
+              (cons (float-time) choice))
+        choice))))
+
+(defun ema--plist-merge (plist overrides)
+  "Return a copy of PLIST with the pairs of plist OVERRIDES put over it."
+  (let ((out (copy-sequence plist)))
+    (while overrides
+      (setq out (plist-put out (pop overrides) (pop overrides))))
+    out))
 
 (defun ema-current-provider ()
   "Return the name of the provider in use for the current project."
@@ -357,6 +397,41 @@ its model and options applied (see `ema-current-config')."
 
 ;;;; Transport
 
+(defvar ema-request-timeout 600
+  "Seconds before a model request is abandoned.")
+
+(defconst ema--wire-formats
+  '((anthropic :headers ema--anthropic-headers
+               :body ema--anthropic-body
+               :parse ema--anthropic-parse)
+    (openai    :headers ema--openai-headers
+               :body ema--openai-body
+               :parse ema--openai-parse))
+  "The functions of each wire format, by the :api of a provider.")
+
+(defun ema--wire (p part)
+  "Return the function for PART of the wire format of provider plist P.
+PART is :headers, :body or :parse.  An :api that is not `openai' is
+treated as `anthropic'."
+  (plist-get (alist-get (if (eq (plist-get p :api) 'openai) 'openai 'anthropic)
+                        ema--wire-formats)
+             part))
+
+(defun ema--request-headers (p)
+  "Return the request headers for provider plist P, each value as bytes.
+url.el refuses a request whose parts mix multibyte and unibyte strings."
+  (mapcar (lambda (h) (cons (car h) (encode-coding-string (cdr h) 'utf-8)))
+          (funcall (ema--wire p :headers) p)))
+
+(defun ema--response-json ()
+  "Return the JSON body of the HTTP response in the current buffer, or nil."
+  (when (bound-and-true-p url-http-end-of-headers)
+    (ignore-errors
+      (ema--json-parse
+       (decode-coding-string
+        (buffer-substring-no-properties url-http-end-of-headers (point-max))
+        'utf-8)))))
+
 (defun ema--error-text (json status)
   "Extract a readable error from JSON for HTTP STATUS."
   (let ((e (and (listp json) (plist-get json :error))))
@@ -364,6 +439,37 @@ its model and options applied (see `ema-current-config')."
             (cond ((stringp e) e)
                   ((and (listp e) (plist-get e :message)))
                   (t "no error detail")))))
+
+(defun ema--response-reply (p status)
+  "Return the neutral reply for the HTTP response in the current buffer.
+P is the provider plist; STATUS is what `url-retrieve' passed to its
+callback.  A failure comes back as (:error STRING)."
+  (let ((http (bound-and-true-p url-http-response-status))
+        (json (ema--response-json)))
+    (cond ((and http (>= http 400))
+           (list :error (ema--error-text json http)))
+          ((plist-get status :error)
+           (list :error (format "%S" (plist-get status :error))))
+          ((null json)
+           (list :error "the answer is not JSON"))
+          (t (condition-case err
+                 (funcall (ema--wire p :parse) json)
+               (error (list :error (error-message-string err))))))))
+
+(defun ema--response-retry-p (attempt)
+  "Non-nil when the response in the current buffer deserves another try.
+That is a 429 or a 5xx answer, while ATTEMPT (the retries so far) is
+below 2."
+  (let ((http (bound-and-true-p url-http-response-status)))
+    (and http (or (= http 429) (>= http 500)) (< attempt 2))))
+
+(defun ema-llm-cancel (request)
+  "Stop REQUEST, the buffer that `ema-llm-request' returned."
+  (when (buffer-live-p request)
+    (let ((proc (get-buffer-process request))
+          (kill-buffer-query-functions nil))
+      (when proc (delete-process proc))
+      (kill-buffer request))))
 
 (defun ema-llm-request (system messages tools callback &optional attempt provider)
   "Send the conversation to a provider; return the request buffer.
@@ -375,67 +481,39 @@ tool plists (:name :description :input_schema).  CALLBACK receives a
 plist: (:content VECTOR :stop STRING :usage PLIST) or (:error STRING).
 ATTEMPT counts retries of 429 and 5xx answers."
   (let* ((p (or provider (ema-provider-plist)))
-         (openai (eq (plist-get p :api) 'openai))
+         (attempt (or attempt 0))
          (url-request-method "POST")
-         ;; url.el refuses a request whose parts mix multibyte and
-         ;; unibyte strings: every header value goes out as bytes
-         (url-request-extra-headers
-          (mapcar (lambda (h) (cons (car h) (encode-coding-string (cdr h) 'utf-8)))
-                  (if openai (ema--openai-headers p) (ema--anthropic-headers p))))
+         (url-request-extra-headers (ema--request-headers p))
          (url-request-data
           (ema--json-encode
-           (if openai (ema--openai-body p system messages tools)
-             (ema--anthropic-body p system messages tools))))
-         (attempt (or attempt 0))
-         (done nil) (timer nil) (buf nil)
-         (finish (lambda (reply)
+           (funcall (ema--wire p :body) p system messages tools)))
+         (done nil) (timer nil) (request nil)
+         ;; the answer and the timeout race: only the first one settles
+         (settle (lambda (&optional reply)
                    (unless done
                      (setq done t)
                      (when timer (cancel-timer timer))
-                     (funcall callback reply)))))
-    (setq buf
+                     (when reply (funcall callback reply))))))
+    (setq request
           (url-retrieve
            (encode-coding-string (plist-get p :url) 'utf-8)
            (lambda (status)
-             (let* ((http (bound-and-true-p url-http-response-status))
-                    (raw (and (bound-and-true-p url-http-end-of-headers)
-                              (buffer-substring-no-properties
-                               url-http-end-of-headers (point-max))))
-                    (json (and raw (condition-case nil
-                                       (ema--json-parse
-                                        (decode-coding-string raw 'utf-8))
-                                     (error nil)))))
+             (let ((retry (ema--response-retry-p attempt))
+                   (reply (ema--response-reply p status)))
                (kill-buffer (current-buffer))
-               (cond
-                (done nil)
-                ((and http (or (= http 429) (>= http 500)) (< attempt 2))
-                 (setq done t)
-                 (when timer (cancel-timer timer))
-                 (run-at-time (* 3 (1+ attempt)) nil #'ema-llm-request
-                              system messages tools callback (1+ attempt) p))
-                ((and http (>= http 400))
-                 (funcall finish (list :error (ema--error-text json http))))
-                ((plist-get status :error)
-                 (funcall finish
-                          (list :error (format "%S" (plist-get status :error)))))
-                ((null json)
-                 (funcall finish (list :error "the answer is not JSON")))
-                (t (funcall finish
-                            (condition-case err
-                                (if openai (ema--openai-parse json)
-                                  (ema--anthropic-parse json))
-                              (error (list :error (error-message-string err)))))))))
+               (cond (done nil)
+                     (retry
+                      (funcall settle)
+                      (run-at-time (* 3 (1+ attempt)) nil #'ema-llm-request
+                                   system messages tools callback (1+ attempt) p))
+                     (t (funcall settle reply)))))
            nil t t))
     (setq timer
           (run-at-time ema-request-timeout nil
                        (lambda ()
-                         (when (buffer-live-p buf)
-                           (let ((proc (get-buffer-process buf))
-                                 (kill-buffer-query-functions nil))
-                             (when proc (delete-process proc))
-                             (kill-buffer buf)))
-                         (funcall finish (list :error "request timed out")))))
-    buf))
+                         (ema-llm-cancel request)
+                         (funcall settle (list :error "request timed out")))))
+    request))
 
 (provide 'ema-llm)
 ;;; ema-llm.el ends here
