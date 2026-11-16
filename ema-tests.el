@@ -871,5 +871,40 @@ The directory is not a project, so the chat is \"*ema*\"."
              (should-not (string-match-p "parser" (ema-memory-search)))))
        (kill-buffer chat)))))
 
+;;; Transport
+
+(ert-deftest ema-llm-cancel-stops-a-waiting-retry ()
+  "A 500 answer schedules a retry; the handle cancels it."
+  (let* ((hits 0) (replies nil)
+         (server (make-network-process
+                  :name "ema-test" :server t :host "127.0.0.1" :service t
+                  :family 'ipv4 :coding 'binary
+                  :filter (lambda (proc _text)
+                            (cl-incf hits)
+                            (process-send-string
+                             proc "HTTP/1.1 500 X\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}")
+                            (delete-process proc))))
+         (wait (lambda (test)
+                 (let ((end (+ (float-time) 3)))
+                   (while (and (not (funcall test)) (< (float-time) end))
+                     (accept-process-output nil 0.05))))))
+    (unwind-protect
+        (cl-letf (((symbol-function 'ema--request-headers) #'ignore))
+          (let ((request (ema-llm-request
+                          "s" nil nil (lambda (r) (push r replies)) nil
+                          (list :api 'anthropic :model "m"
+                                :url (format "http://127.0.0.1:%d/"
+                                             (process-contact server :service))))))
+            (funcall wait (lambda () (timerp (car request))))
+            (should (= hits 1))
+            (should (timerp (car request)))
+            (should (memq (car request) timer-list))
+            (ema-llm-cancel request)
+            (should-not (car request))
+            (should-not (cl-find #'ema--llm-attempt timer-list
+                                 :key #'timer--function))
+            (should-not replies)))
+      (delete-process server))))
+
 (provide 'ema-tests)
 ;;; ema-tests.el ends here

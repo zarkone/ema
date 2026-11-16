@@ -96,7 +96,8 @@
 ;; The running turn.
 (defvar-local ema--busy nil "Non-nil while a turn runs.")
 (defvar-local ema--generation 0 "Bumped by abort; stale replies are dropped.")
-(defvar-local ema--request nil "The buffer of the request in flight.")
+(defvar-local ema--request nil
+  "The handle of the request in flight, for `ema-llm-cancel'.")
 (defvar-local ema--origin nil "The buffer the user worked in when they sent.")
 (defvar-local ema--turns 0 "Model calls made for the current user message.")
 (defvar-local ema--call-start nil "When the model call in flight started.")

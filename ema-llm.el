@@ -464,58 +464,75 @@ below 2."
     (and http (or (= http 429) (>= http 500)) (< attempt 2))))
 
 (defun ema-llm-cancel (request)
-  "Stop REQUEST, the buffer that `ema-llm-request' returned."
-  (when (buffer-live-p request)
-    (let ((proc (get-buffer-process request))
-          (kill-buffer-query-functions nil))
-      (when proc (delete-process proc))
-      (kill-buffer request))))
+  "Stop REQUEST, the handle that `ema-llm-request' returned.
+The handle is a list of one element: the buffer of the HTTP request in
+flight, or the timer that waits to send it again."
+  (let ((now (car request)))
+    (cond ((timerp now) (cancel-timer now))
+          ((buffer-live-p now)
+           (let ((proc (get-buffer-process now))
+                 (kill-buffer-query-functions nil))
+             (when proc (delete-process proc))
+             (kill-buffer now))))
+    (when request (setcar request nil))))
 
 (defun ema-llm-request (system messages tools callback &optional attempt provider)
-  "Send the conversation to a provider; return the request buffer.
+  "Send the conversation to a provider; return a handle for `ema-llm-cancel'.
 PROVIDER is a provider plist; the default is the current provider.  A
 call with an explicit PROVIDER is an independent adapter instance: it
 does not touch `ema-provider', so a configuration can be tried first.
 SYSTEM is a string, MESSAGES a list of neutral messages, TOOLS a list of
 tool plists (:name :description :input_schema).  CALLBACK receives a
 plist: (:content VECTOR :stop STRING :usage PLIST) or (:error STRING).
-ATTEMPT counts retries of 429 and 5xx answers."
-  (let* ((p (or provider (ema-provider-plist)))
-         (attempt (or attempt 0))
-         (url-request-method "POST")
+ATTEMPT counts retries of 429 and 5xx answers.  The handle stays valid
+through the retries."
+  (let ((request (list nil)))
+    (ema--llm-attempt request (or provider (ema-provider-plist))
+                      system messages tools callback (or attempt 0))
+    request))
+
+(defun ema--llm-attempt (request p system messages tools callback attempt)
+  "Send one HTTP request for the handle REQUEST; keep its buffer there.
+P is the provider plist, ATTEMPT the number of retries so far; the other
+arguments are those of `ema-llm-request'."
+  (let* ((url-request-method "POST")
          (url-request-extra-headers (ema--request-headers p))
          (url-request-data
           (ema--json-encode
            (funcall (ema--wire p :body) p system messages tools)))
-         (done nil) (timer nil) (request nil)
+         (done nil) (timer nil)
          ;; the answer and the timeout race: only the first one settles
          (settle (lambda (&optional reply)
                    (unless done
                      (setq done t)
                      (when timer (cancel-timer timer))
                      (when reply (funcall callback reply))))))
-    (setq request
-          (url-retrieve
-           (encode-coding-string (plist-get p :url) 'utf-8)
-           (lambda (status)
-             (let ((retry (ema--response-retry-p attempt))
-                   (reply (ema--response-reply p status)))
-               (kill-buffer (current-buffer))
-               (cond (done nil)
-                     (retry
-                      (funcall settle)
-                      (run-at-time (* 3 (1+ attempt)) nil #'ema-llm-request
-                                   system messages tools callback (1+ attempt) p))
-                     (t (funcall settle reply)))))
-           nil t t))
+    (setcar request
+            (url-retrieve
+             (encode-coding-string (plist-get p :url) 'utf-8)
+             (lambda (status)
+               (let ((retry (ema--response-retry-p attempt))
+                     (reply (ema--response-reply p status)))
+                 (kill-buffer (current-buffer))
+                 (cond (done nil)
+                       (retry
+                        (funcall settle)
+                        ;; an empty handle is a cancelled one: no retry
+                        (when (car request)
+                          (setcar request
+                                  (run-at-time
+                                   (* 3 (1+ attempt)) nil #'ema--llm-attempt
+                                   request p system messages tools callback
+                                   (1+ attempt)))))
+                       (t (funcall settle reply)))))
+             nil t t))
     (setq timer
           (run-at-time ema-request-timeout nil
                        (lambda ()
                          ;; settle first: the cancel calls the callback
                          ;; above, which must find the request settled
                          (funcall settle (list :error "request timed out"))
-                         (ema-llm-cancel request))))
-    request))
+                         (ema-llm-cancel request))))))
 
 (provide 'ema-llm)
 ;;; ema-llm.el ends here
