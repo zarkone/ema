@@ -511,8 +511,10 @@ ATTEMPT counts retries of 429 and 5xx answers."
     (setq timer
           (run-at-time ema-request-timeout nil
                        (lambda ()
-                         (ema-llm-cancel request)
-                         (funcall settle (list :error "request timed out")))))
+                         ;; settle first: the cancel calls the callback
+                         ;; above, which must find the request settled
+                         (funcall settle (list :error "request timed out"))
+                         (ema-llm-cancel request))))
     request))
 
 (provide 'ema-llm)

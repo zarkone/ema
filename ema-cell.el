@@ -112,10 +112,10 @@ otherwise."
           (format "\nThe documentation of %s:\n%s" tool (ema-doc tool)))
          (t (format "\nThe failed tool: %s" (ema--tool-line tool))))))
 
-(defun ema--digest-failed-p (digest)
-  "Non-nil when DIGEST is the digest of a cell that failed or was stopped.
-The test is a line that starts as `ema-eval-cell' starts a failure."
-  (string-match-p "^\\(?:error: \\|Quit: \\)" digest))
+(defvar ema--cell-failed nil
+  "Non-nil when the latest cell failed or was stopped.
+`ema-eval-cell' sets it.  The digest cannot tell: a cell that prints
+\"error: \" looks the same as one that failed.")
 
 ;;;; Run a cell
 
@@ -150,7 +150,7 @@ FAILURE is the text of an error or a quit; it replaces VALUE."
 The digest holds what the cell printed, new *Messages* lines and the
 value of the last form, each cut at the digest limit (`ema-digest-limit',
 or the larger one when FULL is non-nil).  An error or a C-g comes back
-as text: a cell never signals."
+as text: a cell never signals; `ema--cell-failed' tells which it was."
   (let ((limit (if full ema-digest-full-limit ema-digest-limit))
         (out (generate-new-buffer " *ema-out*"))
         (messages-start (with-current-buffer (messages-buffer) (point-max-marker)))
@@ -168,6 +168,7 @@ as text: a cell never signals."
             (quit (setq failure "Quit: the user stopped this cell with C-g."))
             (error (setq failure (concat "error: " (error-message-string err)
                                          (ema--error-hint err failed-tool)))))
+          (setq ema--cell-failed (and failure t))
           (ema--digest (with-current-buffer out (buffer-string))
                        (with-current-buffer (messages-buffer)
                          (string-trim (buffer-substring-no-properties

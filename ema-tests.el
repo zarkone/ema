@@ -40,6 +40,12 @@ The directory is not a project, so the chat is \"*ema*\"."
 
 (ert-deftest ema-cell-value-output-error ()
   (should (equal (ema-eval-cell "(+ 1 2)") "=> 3"))
+  (should-not ema--cell-failed)
+  ;; printed text that looks like a failure is not one
+  (ema-eval-cell "(princ \"error: not mine\")")
+  (should-not ema--cell-failed)
+  (ema-eval-cell "(car 1)")
+  (should ema--cell-failed)
   (should (equal (ema-eval-cell "(princ \"hi\") (list 1 2)") "output:\nhi\n=> (1 2)"))
   (should (string-prefix-p "error: " (ema-eval-cell "(car 1)")))
   (should (string-match-p "similar name" (ema-eval-cell "(ema-eval-cel 1)")))

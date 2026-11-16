@@ -336,7 +336,7 @@ in the queue, and recorded in the history."
            (digest (let ((ema--current-chat (current-buffer)))
                      (ema-eval-cell code full ema--origin)))
            (ms (round (* 1000 (- (float-time) start))))
-           (status (if (ema--digest-failed-p digest) 'error 'done)))
+           (status (if ema--cell-failed 'error 'done)))
       (when ema--conversation
         (ema--history-cell ema--conversation n code digest status ms))
       (ema--cell-ended digest status)
