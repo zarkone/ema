@@ -11,6 +11,15 @@ through your buffers, your minibuffer and your keys.
 I decided to distribute it as source code, not as package, with the
 idea that when you need something you just extend `ema` in place.
 
+Some of the ideas come from
+[anybao](https://github.com/anyproto/anybao), which is way more
+complex -- so `ema` in that sense is a minimal cut-off on purpose.
+For example, I've dropped deterministic traces and reproducibility: in
+anybao it's a main debugging, self-healing superpower, but here I
+trade it off in this implementation for smaller footprint with the
+idea that emacs runtime itself should be enough to debug to some
+degree.
+
 ## Core capabilities
 
 | Area | What ema does | Tools |
@@ -239,3 +248,9 @@ the minibuffer. A suggestion shows a diff and waits for `y` or `n` in
 the diff buffer; you can read other buffers first. Nothing else
 enforces that. Use
 it where you would let a colleague type at your keyboard.
+
+## License
+
+ema is free software: you can redistribute it and modify it under the
+terms of the GNU General Public License, version 3 or (at your option)
+any later version. See [LICENSE](LICENSE). There is no warranty.
