@@ -20,6 +20,10 @@ trade it off in this implementation for smaller footprint with the
 idea that emacs runtime itself should be enough to debug to some
 degree.
 
+![ema in Emacs: the chat beside the code](docs/screenshot-1.png)
+
+![ema in Emacs: a suggested change](docs/screenshot-2.png)
+
 ## Core capabilities
 
 | Area | What ema does | Tools |
