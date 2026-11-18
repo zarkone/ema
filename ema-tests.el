@@ -57,6 +57,15 @@ The directory is not a project, so the chat is \"*ema*\"."
      (should-error (progn (goto-char 3) (insert "X")) :type 'text-read-only)
      (should (equal (buffer-substring-no-properties ema--input (point-max)) "typed")))))
 
+(ert-deftest ema-reply-markdown ()
+  (skip-unless (locate-library "markdown-mode"))
+  (let ((s (ema--markdown "a **b** c")))
+    (should (equal (substring-no-properties s) "a **b** c"))
+    (should (equal (get-text-property 5 'face s) '(markdown-bold-face)))
+    (should (null (get-text-property 0 'face s))))
+  (let ((ema-render-markdown nil))
+    (should (equal-including-properties (ema--markdown "a **b**") "a **b**"))))
+
 (ert-deftest ema-cell-value-output-error ()
   (should (equal (ema-eval-cell "(+ 1 2)") "=> 3"))
   (should-not ema--cell-failed)

@@ -339,10 +339,41 @@ there works only once.  ema's own writes bind `inhibit-read-only'."
                        "\n")
                'ema-user))
 
+(declare-function markdown-mode "markdown-mode")
+
+(defcustom ema-render-markdown t
+  "Non-nil means show the model's replies fontified by `markdown-mode'.
+It takes effect only when `markdown-mode' is installed."
+  :type 'boolean
+  :group 'ema)
+
+(defun ema--markdown (text)
+  "Return TEXT with the faces that `markdown-mode' gives it.
+Only the `face' and `invisible' properties are kept, so that the chat
+stays in `ema-mode'.  TEXT comes back as it is when `ema-render-markdown'
+is nil or `markdown-mode' is missing."
+  (if (not (and ema-render-markdown (require 'markdown-mode nil t)))
+      text
+    (let ((out (copy-sequence text)))
+      (condition-case nil
+          (with-temp-buffer
+            (insert text)
+            (delay-mode-hooks (markdown-mode))
+            (font-lock-ensure)
+            (let ((pos (point-min)))
+              (while (< pos (point-max))
+                (let ((next (or (next-property-change pos) (point-max))))
+                  (dolist (prop '(face invisible))
+                    (when-let* ((val (get-text-property pos prop)))
+                      (put-text-property (1- pos) (1- next) prop val out)))
+                  (setq pos next))))
+            out)
+        (error text)))))
+
 (defun ema--insert-reply (text)
   "Insert the model's reply TEXT in the transcript; its file paths become links."
   (let ((from (marker-position ema--out)))
-    (ema--insert (concat "\n" (string-trim text) "\n"))
+    (ema--insert (concat "\n" (ema--markdown (string-trim text)) "\n"))
     (ema--linkify from (marker-position ema--out))))
 
 (defun ema--insert-notice (text)
